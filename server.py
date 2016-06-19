@@ -21,6 +21,8 @@ from gevent import monkey
 import util_funcs
 import sys
 import urllib
+from datetime import date, datetime
+from time import sleep
 monkey.patch_all()
 
 
@@ -44,7 +46,7 @@ import re
 import cookies
 from bson import json_util
 
-from database import Db
+from database_ndb import Db
 
 
 db = Db()
@@ -67,13 +69,14 @@ class Connection(WebSocket):
     is_stale = False
     connection_id = None
     is_external_node = False    
-    
+    last_ping_time = None
     
     def __init__(self, ws,  to_node_id, client_id , connection_id):
         self.ws = ws
         self.to_node_id = to_node_id
         self.client_id = client_id
         self.connection_id = connection_id
+        self.last_ping_time =  datetime.now()
         if(not connection_id):# mean we are getting this from an unknown one sided party
             self.is_external_node = True
         
@@ -144,7 +147,22 @@ class Node():
     connections_ws = {} # ws - > connection_obj
     
     
-    
+    def send_heartbeat(self):
+        ping_json = json_util.dumps(Message(src_id=self.node_id).to_son())
+        while(True):
+            last_ping_sent = datetime.now()
+            for node_id in self.connections.keys():
+                for conn in self.connections.get(node_id , []):
+                    try:
+                        conn.send(ping)
+                    except:
+                        pass
+            time_elapsed = (datetime.now() - last_ping_sent).total_seconds()
+            logger.debug("sent a heartbeat")
+            gevent.sleep(max(0 , 30*60 - (time_elapsed))) # 10 minutes send a heart beat
+            
+            
+            
     @classmethod
     def get_connection_info(cls, auth_key=None):
         data = cookies.decode_signed_value(config.SERVER_SECRET, config.SERVER_AUTH_KEY_STRING, urllib.unquote(auth_key))
@@ -162,6 +180,7 @@ class Node():
         
         conn_list = self.connections.get(node_id)# get direct connection to node_id if exists
         if(conn_list):
+            
             for conn in conn_list:
                 if len(conn.queue)<15:
                     return conn
@@ -226,6 +245,7 @@ class Node():
         
         if(ws):
             from_conn = self.connections_ws[ws]
+            from_conn.last_ping_time = datetime.now()
             if(from_conn.is_external_node):# set the src if only if from external_nodefor delivery reports
                 msg.src_id = from_conn.to_node_id
                 msg.src_client_id = from_conn.client_id
@@ -248,7 +268,7 @@ class Node():
 #         if(db.is_valid_node_fwd(msg.src_id, msg.dest_id)):
         
         for dest_id in dest_ids:# sending to all nodes
-            if(dest_id==msg.src_id): continue
+            if(not dest_id or dest_id==msg.src_id): continue
             
             while(True):#loops through connections until you can send the message it once
                 conn = self.get_connection(dest_id)
@@ -256,6 +276,9 @@ class Node():
                     logger.debug("Could not send, putting into db, and notifying user about new messages")
                     break # cannot find any connection
                 try:
+                    if((datetime.now() - conn.last_ping_time).total_seconds()>20*60):#20 minutes no ping
+                        raise #probably a stale connection 
+                    
                     msg.dest_id = dest_id
                     conn.send(json_util.dumps(msg.to_son())) # this could raise 
                     logger.debug("message sent to "+dest_id)
@@ -283,10 +306,10 @@ class Node():
         
 
         to_node = util_funcs.from_kwargs(Node, **db.get_node_by_id(to_node_id))
-
         connection_id = db.add_connection(current_node.node_id, to_node_id)
         try:
             ws = create_connection("ws://"+to_node.addr+":"+to_node.port+"/connect?auth_key="+Node.get_connection_auth_key(current_node.node_id, connection_id))
+            ws.settimeout(5)
             conn = self.on_new_connection(ws, to_node, connection_id)
             #TODO: keep recieving for on close may be ?
             gevent.spawn(recv_from_ws , ws, Node.on_message, Node.destroy_connection)
@@ -369,9 +392,8 @@ class InstaKnow(WebSocketApplication):
             return
         auth_key = auth_key[0]
         from_node_id , connection_id  = Node.get_connection_info(auth_key)
-        
+
         from_node = util_funcs.from_kwargs(Node, **db.get_node_by_id(from_node_id, strict_check=False))
-        
         if(self.query_params.get("get_pre_connection_info",None)):
             client_id = from_node.client_id
             session_id = self.query_params.get("session_id", None)
@@ -383,6 +405,7 @@ class InstaKnow(WebSocketApplication):
             self.ws.close()
                         
         else:
+            self.ws.stream.handler.socket.settimeout(5)
             current_node.on_new_connection(self.ws, from_node , connection_id)
     
     def on_close(self, reason):
@@ -427,6 +450,9 @@ def start_transport_server():
     
     ## clear all connections to the node from db 
     db.clear_connections_to_node_from_db(node_id)
+    
+    
+    thread = gevent.spawn(current_node.send_heartbeat)# loop forever and send heartbeat every 10 minutes
     
     WebSocketServer(
     ('0.0.0.0', int(args.port)),

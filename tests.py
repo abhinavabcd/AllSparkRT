@@ -44,11 +44,11 @@ def test1():
     
     print "creating node" , node_id, client_node_id1, client_node_id2
     
-    auth_key_client1 = cookies.create_signed_value(config.SERVER_KEY , "auth", json.dumps({'node_id':client_node_id1}))
+    auth_key_client1 = cookies.create_signed_value(config.SERVER_KEY , config.SERVER_AUTH_KEY_STRING, json.dumps({'node_id':client_node_id1}))
     
     
     
-    auth_key_client2 = cookies.create_signed_value(config.SERVER_KEY , "auth",json.dumps({'node_id':client_node_id2}))
+    auth_key_client2 = cookies.create_signed_value(config.SERVER_KEY , config.SERVER_AUTH_KEY_STRING ,json.dumps({'node_id':client_node_id2}))
     
     
     ws1 = create_connection("ws://192.168.1.17:8081/connect?auth_key="+auth_key_client1)
