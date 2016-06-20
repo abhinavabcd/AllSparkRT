@@ -9,6 +9,7 @@ from pymongo import MongoClient
 import config
 from bson.objectid import ObjectId
 import util_funcs
+from lru_cache import LRUCache
 
 ### node ###
 # node = table(node_id , client_id, addr , addr_internal , port,  cluster_id , is_external_node, current_connections, max_concurrent_cnnections)
@@ -36,9 +37,12 @@ class Db():
     db = None
     connections  = None
     nodes  = None
+    
+    
+    node_cache = LRUCache(10000)
     def init(self):
         client = MongoClient('mongodb://localhost:27017/')
-        self.db = client[config.DB_NAME] 
+        self.db = client[config.DB_NAME]
         self.nodes = self.db["nodes"]
         self.connections = self.db["connections"]
         
@@ -50,17 +54,26 @@ class Db():
         self.client_network = self.db["client_network"]
         
         
-        
+    
+    # should return  a dict 
     def get_node_by_id(self, node_id, strict_check = True):
-        node = self.nodes.find_one({"node_id":node_id})
+        node = self.node_cache.get(node_id)
+        if(not node):
+            node = self.nodes.find_one({"node_id":node_id})
+            if(node): self.node_cache.set(node_id, node)
         if(not node):
             if(strict_check):
                 return None
             else:
+                #create one and return
+                inserted_one = self.nodes.insert_one({"node_id":node_id})
                 return {"node_id":node_id} # some anonymous connection
         return node
             
             
+    def update_android_gcm_key(self, node_id, android_gcm_key):
+        result = self.nodes.update_one({"node_id":node_id}, {"gcm_key": android_gcm_key})
+        return result.modified_count ==1
     
     
     def get_node_with_connection_to(self , node_id):
@@ -80,7 +93,10 @@ class Db():
             return connection_id
     
     def is_server_node(self, node_id):
-        node = self.get_node_by_id(node_id)
+        node = self.node_cache.get(node_id)
+        if(not node):
+            node = self.get_node_by_id(node_id)
+            self.node_cache.set(node_id , node)
         return node and node.get('addr',None)!=None
     
     
@@ -118,8 +134,11 @@ class Db():
             ret.append(i["node_id"])
         return ret
 
-    def create_node(self, client_id , addr , addr_internal, port):
+    def create_node(self, client_id , addr , addr_internal, port, is_server=False):
         node_id = ((client_id+"__") if client_id else "")+util_funcs.get_random_id(10)
+        if(is_server):
+            node_id = "server__"+node_id
+            
         self.nodes.insert_one({"node_id":node_id, "client_id":client_id ,"addr":addr, "addr_internal":addr_internal, "port":port})
         return  node_id
 
@@ -163,10 +182,11 @@ class Db():
     def join_session(self, session_id , node_id):
         self.session_nodes.insert_one({"session_id":session_id, "node_id":node_id})
         
-    
-    
-    
     def remove_client_nodes(self, client_id):
         self.nodes.remove({"client_id":client_id})
     
-           
+    def add_pending_messages(self, node_id, message):
+        pass
+        
+    def fetch_inbox_messages(self, node_id , from_seq=-1, to_seq=-1, last_message_seen_time=None):
+        return None, None, None # return messages as strings , until_sequence_number , last_sequence_number

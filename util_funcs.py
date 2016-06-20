@@ -6,6 +6,7 @@ Created on May 27, 2016
 import time 
 import random 
 import string
+import datetime
 
 
 def get_random_id(length=10):
@@ -22,3 +23,15 @@ def from_kwargs(cls, **kwargs):
     for key in kwargs:
         setattr(ret, key, kwargs[key])
     return ret
+
+EPOCH_DATETIME = datetime.datetime(1970,1,1)
+
+def toUtcTimestamp(dt):
+    try:
+        td = dt - EPOCH_DATETIME
+        # return td.total_seconds()
+        return  (td.microseconds + (td.seconds + td.days * 24 * 3600) * 10**6) / 1e6 
+    except:
+        return 0
+  
+

@@ -18,17 +18,20 @@ class TimeTrackedModel(ndb.Model):
 
 
 class NodeEntity(TimeTrackedModel):
-    address = ndb.StringProperty()
-    address_internal = ndb.StringProperty()
+    node_id = ndb.StringProperty()
+    addr = ndb.StringProperty()
+    addr_internal = ndb.StringProperty()
     client_id = ndb.StringProperty()
     port = ndb.IntegerProperty(default=0)
-
+    gcm_key = ndb.StringProperty()
+    
     @classmethod
     def flush_counter(cls, expression_key, field_name):
         pass
 
 
 class ConnectionEntity(TimeTrackedModel):
+    connection_id = ndb.StringProperty(indexed = True)
     to_node_key = ndb.KeyProperty(kind="NodeEntity")
     from_node_key = ndb.KeyProperty(kind="NodeEntity")
 
@@ -36,9 +39,9 @@ class ConnectionEntity(TimeTrackedModel):
 class SessionEntity(TimeTrackedModel):
     name = ndb.StringProperty()
     description = ndb.StringProperty()
-    node_key = ndb.KeyProperty()
+    node_key = ndb.KeyProperty(kind = 'NodeEntity')
     client_id = ndb.StringProperty()
 
 class SessionNodesEntity(TimeTrackedModel):
-    session_key = ndb.KeyProperty()
-    node_key = ndb.KeyProperty()
+    session_key = ndb.KeyProperty(kind=SessionEntity)
+    node_key = ndb.KeyProperty(kind=NodeEntity)
