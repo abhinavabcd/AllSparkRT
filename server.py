@@ -270,6 +270,8 @@ class Node():
             if(msg.type==-101):
                 #config message
                 #update gcm key from client
+                logger.debug("recieved config message from: "+from_conn.from_node_id)
+                
                 user_service_request = json_util.loads(msg.payload)
                 update_gcm_key = user_service_request.get('update_gcm_key',None)
                 fetch_inbox_messages = user_service_request.get('fetch_inbox_messages',None)
@@ -277,6 +279,7 @@ class Node():
                 
                 
                 if(update_gcm_key):
+                    logger.debug("updating gcm key: "+ update_gcm_key +" "+from_conn.from_node_id)
                     db.update_android_gcm_key(msg.src_id, update_gcm_key)
                 
                 if(fetch_inbox_messages):

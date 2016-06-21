@@ -10,13 +10,13 @@ class LRUCache:
         self.capacity = capacity
         self.cache = collections.OrderedDict()
 
-    def get(self, key):
+    def get(self, key, default=None):
         try:
             value = self.cache.pop(key)
             self.cache[key] = value
             return value
         except KeyError:
-            return -1
+            return default
 
     def set(self, key, value):
         try:

@@ -5,7 +5,9 @@ Created on May 23, 2016
 '''
 
 import config
-from bson.objectid import ObjectId
+
+
+
 import util_funcs
 from bson import json_util
 
@@ -25,10 +27,12 @@ from bson import json_util
 ### temporary session like multiplayer games , just subscription 
 # session =  table( session_id , name , description , created_by_client_id)
 # session_nodes - table(session_id , client_id)
+from google.appengine.ext import ndb
 from google.appengine.ext.remote_api import remote_api_stub
 from oauth2client.client import SignedJwtAssertionCredentials
-from models.users import UserInboxMessage, UserEntity
 from lru_cache import LRUCache
+from models_ndb import NodeEntity, ConnectionEntity, SessionNodesEntity,\
+    SessionEntity
 
 scope = "https://www.googleapis.com/auth/userinfo.email"
 service_account_json_file_name = 'Samosa-Uploads-OAuth-Key.json'
@@ -36,12 +40,12 @@ service_account_info = json_util.loads(open(service_account_json_file_name).read
 credentials = SignedJwtAssertionCredentials(service_account_info['client_email'],service_account_info['private_key'],scope)
 from httplib2 import Http
 import os
+from models.users import UserInboxMessage
 
 http_auth = credentials.authorize(Http())
 
 os.environ['SERVER_SOFTWARE'] = 'Development (remote_api)/1.0'
 remote_api_stub.ConfigureRemoteApiForOAuth('the-tasty-samosa.appspot.com', '/_ah/remote_api')
-from models import *
 
 class Db():
 
@@ -52,7 +56,7 @@ class Db():
 
     def get_node_by_id(self, node_id, strict_check=True):
         node = self.node_cache.get(node_id)
-        if(not node):
+        if(not node): 
             node = NodeEntity.get_by_id(node_id)
         
         if (not node):
@@ -186,5 +190,10 @@ class Db():
         return UserInboxMessage.add_inbox_message(ndb.Key('UserEntity', node_id), message_type, message )
             
     def fetch_inbox_messages(self, node_id , from_seq=-1, to_seq = -1,  last_message_seen_time=None):   
-        return UserInboxMessage.fetch_inbox_messages(ndb.Key('UserEntity', node_id), from_seq, to_seq, last_message_seen_time)
-    
+        return UserInboxMessage.get_inbox_messages(ndb.Key('UserEntity', node_id), from_seq, to_seq, last_message_seen_time)
+
+
+
+if __name__ == '__main__':
+    db = Db()
+    print db.get_node_by_id("some_random_node", strict_check=False)
