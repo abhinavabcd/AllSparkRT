@@ -4,12 +4,6 @@ Created on May 23, 2016
 @author: abhinav
 '''
 
-import config
-
-
-
-import util_funcs
-from bson import json_util
 
 ### node ###
 # node = table(node_id , client_id, addr , addr_internal , port,  cluster_id , is_external_node, current_connections, max_concurrent_cnnections)
@@ -30,17 +24,40 @@ from bson import json_util
 
 
 
-from oauth2client.service_account import ServiceAccountCredentials 
-scopes = ['https://www.googleapis.com/auth/userinfo.email' 'https://www.googleapis.com/auth/cloud-platform', 'https://www.googleapis.com/auth/datastore']
+# from oauth2client.service_account import ServiceAccountCredentials 
+# scopes = ['https://www.googleapis.com/auth/userinfo.email' 'https://www.googleapis.com/auth/cloud-platform', 'https://www.googleapis.com/auth/datastore']
+# 
+# service_account_json_file_name = 'Samosa-Uploads-OAuth-Key.json'
+# credentials = ServiceAccountCredentials.from_json_keyfile_name(
+#                                                                service_account_json_file_name,
+#                                                                 scopes=scopes)
+# 
+# from google.appengine.ext.remote_api import remote_api_stub
+# remote_api_stub.ConfigureRemoteApiForOAuth(
+#         '{}.appspot.com'.format("the-tasty-samosa"),
+#         '/_ah/remote_api')
 
-service_account_json_file_name = 'Samosa-Uploads-OAuth-Key.json'
-credentials = ServiceAccountCredentials.from_json_keyfile_name(
-                                                               service_account_json_file_name,
-                                                                scopes=scopes)
-from httplib2 import Http
-http_auth = credentials.authorize(Http())
+try:
+    import dev_appserver
+    dev_appserver.fix_sys_path()
+except ImportError:
+    print('Please make sure the App Engine SDK is in your PYTHONPATH.')
+    raise
 
 
+email = '259129283998-f4acgtan2q32bt00pn9ovu33cb4m62n4@developer.gserviceaccount.com'
+
+from google.appengine.ext.remote_api import remote_api_stub
+remote_api_stub.ConfigureRemoteApiForOAuth(
+     '{}.appspot.com'.format("the-tasty-samosa"),
+     '/_ah/remote_api' ,
+     service_account=email, 
+     key_file_path='Samosa-1927925e9abc.p12')
+
+
+import config
+import util_funcs
+from bson import json_util
 from google.appengine.ext import ndb
 from lru_cache import LRUCache
 from models_ndb import NodeEntity, ConnectionEntity, SessionNodesEntity,\

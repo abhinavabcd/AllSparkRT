@@ -6,9 +6,10 @@ Created on May 25, 2016
 
 APPLICATION_NAME = "InstaKnow"
 
-SERVER_SECRET = "xxxxxxxxxxxxxxxxxxxxxxxxxx"
+SERVER_SECRET = "asdsadkjhsakjdhjksadasdasd"
 SERVER_AUTH_KEY_STRING = "user_key"
 
 DB_NAME = "instaknow"
 
 GCM_API_KEY = "AIzaSyCZMe_erMx75S0RaMi0SAR3znbqs-BVgGo" ## YOUR GCM API KEY HERE
+

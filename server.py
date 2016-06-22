@@ -307,7 +307,7 @@ class Node():
                     break # cannot find any connection
                 try:
                     if((datetime.now() - conn.last_msg_recv_time).total_seconds()>20*60):#20 minutes no ping
-                        raise #probably a stale connection 
+                        raise Exception("Not ping recieved , stale connection")#probably a stale connection 
                     
                     msg.dest_id = dest_id
                     conn.send(json_util.dumps(msg.to_son())) # this could raise 
@@ -344,8 +344,7 @@ class Node():
                         
             post= json_util.dumps(data)
             headers = GCM_HEADERS
-            req=get_data('https://android.googleapis.com/gcm/send',post,headers)
-            ret = urllib.urlopen(req).read() 
+            ret=get_data('https://android.googleapis.com/gcm/send',post,headers).read()
             
             
     
