@@ -19,10 +19,10 @@ class TimeTrackedModel(ndb.Model):
 
 class NodeEntity(TimeTrackedModel):
     node_id = ndb.StringProperty()
-    addr = ndb.StringProperty()
+    addr = ndb.StringProperty(indexed=True)
     addr_internal = ndb.StringProperty()
     client_id = ndb.StringProperty()
-    port = ndb.IntegerProperty(default=0)
+    port = ndb.StringProperty(indexed=True)
     gcm_key = ndb.StringProperty()
     
     @classmethod

@@ -70,14 +70,14 @@ class Connection(WebSocket):
     is_stale = False
     connection_id = None
     is_external_node = False    
-    last_ping_time = None
+    last_msg_recv_time = None
     
     def __init__(self, ws,  to_node_id, client_id , connection_id):
         self.ws = ws
         self.to_node_id = to_node_id
         self.client_id = client_id
         self.connection_id = connection_id
-        self.last_ping_time =  datetime.now()
+        self.last_msg_recv_time =  datetime.now()
         if(not connection_id):# mean we are getting this from an unknown one sided party
             self.is_external_node = True
         
@@ -182,9 +182,8 @@ class Node():
         
         conn_list = self.connections.get(node_id)# get direct connection to node_id if exists
         if(conn_list):
-            
             for conn in conn_list:
-                if len(conn.queue)<15:
+                if len(conn.queue)<50:
                     return conn
         
         is_server = db.is_server_node(node_id)                
@@ -248,7 +247,7 @@ class Node():
         from_conn = None
         if(ws):
             from_conn = self.connections_ws[ws]
-            from_conn.last_ping_time = datetime.now()
+            from_conn.last_msg_recv_time = datetime.now()
             if(from_conn.is_external_node):# set the src if only if from external_nodefor delivery reports
                 msg.src_id = from_conn.to_node_id
                 msg.src_client_id = from_conn.client_id
@@ -270,7 +269,7 @@ class Node():
             if(msg.type==-101):
                 #config message
                 #update gcm key from client
-                logger.debug("recieved config message from: "+from_conn.from_node_id)
+                logger.debug("recieved config message from: "+from_conn.to_node_id)
                 
                 user_service_request = json_util.loads(msg.payload)
                 update_gcm_key = user_service_request.get('update_gcm_key',None)
@@ -279,7 +278,7 @@ class Node():
                 
                 
                 if(update_gcm_key):
-                    logger.debug("updating gcm key: "+ update_gcm_key +" "+from_conn.from_node_id)
+                    logger.debug("updating gcm key: "+ update_gcm_key +" "+from_conn.to_node_id)
                     db.update_android_gcm_key(msg.src_id, update_gcm_key)
                 
                 if(fetch_inbox_messages):
@@ -302,12 +301,12 @@ class Node():
                 conn = self.get_connection(dest_id)
                 if(not conn): 
                     logger.debug("Could not send, putting into db, and notifying user about new messages")
-                    db.add_pending_messages(dest_id, json_util.dumps(msg.to_son()))
+                    db.add_pending_messages(dest_id, msg.type, json_util.dumps(msg.to_son()))
                     self.send_a_ting(dest_id)
                     #send a push notification to open and fetch any pending messages
                     break # cannot find any connection
                 try:
-                    if((datetime.now() - conn.last_ping_time).total_seconds()>20*60):#20 minutes no ping
+                    if((datetime.now() - conn.last_msg_recv_time).total_seconds()>20*60):#20 minutes no ping
                         raise #probably a stale connection 
                     
                     msg.dest_id = dest_id
@@ -316,7 +315,7 @@ class Node():
                     break# successfully forwarded
                 except Exception as e:
                     #keep it in db to send it later
-                    #logger.error(sys.exc_info())
+                    logger.error(sys.exc_info())
                     self.destroy_connection(conn.ws)
                     logger.debug("An exception occured while sending, retrying with another connection")
                     
@@ -325,8 +324,12 @@ class Node():
     def send_a_ting(self, dest_id):
         #put to a queue
         node = db.get_node_by_id(dest_id)
+        if(not node):
+            logger.debug("node not yet registered")
+            return
         gcm_key = node.get("gcm_key", None)
         if(gcm_key):
+            logger.debug("sending a push notification")
             GCM_HEADERS ={'Content-Type':'application/json',
                           'Authorization':'key='+config.GCM_API_KEY 
                          }
@@ -514,7 +517,7 @@ def start_transport_server():
     ('0.0.0.0', int(args.port)),
 
     Paths(OrderedDict([
-        ('^/connect', InstaKnow), # /app/app_id is the websocket path
+        ('^/connectV2', InstaKnow), # /app/app_id is the websocket path
     ])),
 
     debug=False

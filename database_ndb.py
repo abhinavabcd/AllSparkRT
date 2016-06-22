@@ -27,25 +27,28 @@ from bson import json_util
 ### temporary session like multiplayer games , just subscription 
 # session =  table( session_id , name , description , created_by_client_id)
 # session_nodes - table(session_id , client_id)
+
+
+
+from oauth2client.service_account import ServiceAccountCredentials 
+scopes = ['https://www.googleapis.com/auth/userinfo.email' 'https://www.googleapis.com/auth/cloud-platform', 'https://www.googleapis.com/auth/datastore']
+
+service_account_json_file_name = 'Samosa-Uploads-OAuth-Key.json'
+credentials = ServiceAccountCredentials.from_json_keyfile_name(
+                                                               service_account_json_file_name,
+                                                                scopes=scopes)
+from httplib2 import Http
+http_auth = credentials.authorize(Http())
+
+
 from google.appengine.ext import ndb
-from google.appengine.ext.remote_api import remote_api_stub
-from oauth2client.client import SignedJwtAssertionCredentials
 from lru_cache import LRUCache
 from models_ndb import NodeEntity, ConnectionEntity, SessionNodesEntity,\
     SessionEntity
 
-scope = "https://www.googleapis.com/auth/userinfo.email"
-service_account_json_file_name = 'Samosa-Uploads-OAuth-Key.json'
-service_account_info = json_util.loads(open(service_account_json_file_name).read())
-credentials = SignedJwtAssertionCredentials(service_account_info['client_email'],service_account_info['private_key'],scope)
-from httplib2 import Http
 import os
 from models.users import UserInboxMessage
 
-http_auth = credentials.authorize(Http())
-
-os.environ['SERVER_SOFTWARE'] = 'Development (remote_api)/1.0'
-remote_api_stub.ConfigureRemoteApiForOAuth('the-tasty-samosa.appspot.com', '/_ah/remote_api')
 
 class Db():
 
@@ -56,18 +59,22 @@ class Db():
 
     def get_node_by_id(self, node_id, strict_check=True):
         node = self.node_cache.get(node_id)
-        if(not node): 
-            node = NodeEntity.get_by_id(node_id)
+        if(node):
+            return node
         
+        
+        node = NodeEntity.get_by_id(node_id)        
         if (not node):
             #such node never existed
             if (strict_check):
                 return None
             else:
-                return {"node_id": node_id}  # some anonymous connection
+                node = NodeEntity(id=node_id, node_id=node_id)
+                node.put()
+                
         ret =  node.to_dict() # returns a dict object
         ret["node_id"] = node.key.id()
-        self.node_cache.put(node_id, ret)
+        self.node_cache.set(node_id, ret)
         return ret
 
     def update_android_gcm_key(self, node_id, android_gcm_key):
@@ -78,7 +85,7 @@ class Db():
         ret =  node.to_dict() # returns a dict object
         ret["node_id"] = node.key.id()
         
-        self.node_cache.put(node_id, ret)
+        self.node_cache.set(node_id, ret)
         return True
     
 

@@ -25,3 +25,19 @@ class LRUCache:
             while(len(self.cache) >= self.capacity):
                 self.cache.popitem(last=False)
         self.cache[key] = value
+        
+
+def test():
+    from random import random
+    l = LRUCache(100000)
+    for i in xrange(10):
+        s = str(int(random()*1000000))
+        v = l.get(s, None)
+        if(not v):
+            l.set(s , 10923)
+            
+if __name__ =='__main__':
+    import timeit
+    print(timeit.timeit("test()", setup="from __main__ import test"))    
+    
+        

@@ -16,8 +16,8 @@ from time import sleep
 
 
 def test0():
-    print cookies.create_signed_value(config.SERVER_KEY , "auth","{'node':'node1'}")    
-    print cookies.create_signed_value(config.SERVER_KEY , "auth","{'node' : 'node2'}")
+    print cookies.create_signed_value(config.SERVER_SECRET , config.SERVER_AUTH_KEY_STRING,"hyBJZtxM9f")    
+    print cookies.create_signed_value(config.SERVER_SECRET , config.SERVER_AUTH_KEY_STRING,"{'node' : 'node2'}")
     
     return True
 
@@ -112,5 +112,6 @@ def test2():
     ws2.send_close()
         
 if __name__ == "__main__":
-    test2()
+    test0()
+    #test2()
     
