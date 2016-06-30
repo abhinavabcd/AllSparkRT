@@ -20,10 +20,12 @@ import gevent
 from gevent import monkey
 import util_funcs
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from time import sleep
 import urllib
 from urllib_utils import get_data
+import traceback
+from config import EPOCH_DATETIME
 monkey.patch_all()
 
 
@@ -36,12 +38,11 @@ from geventwebsocket.resource import Resource, WebSocketApplication
 
 
 
-
+CONNECT_PATH = "/connectV2"
 
 from logger import logger
 import urlparse
 from collections import OrderedDict
-import config
 
 import re
 import cookies
@@ -49,6 +50,7 @@ from bson import json_util
 
 from database_ndb import Db
 
+import config
 
 db = Db()
 
@@ -99,9 +101,6 @@ class Connection(WebSocket):
         return not self.is_stale
             
         
-    def on_close(self):
-        self.unregister()
-    
 class Message():
     #encrypted client_id
     
@@ -125,6 +124,8 @@ class Message():
     def __init__(self, **kwargs):
         for key in kwargs:
             setattr(self, key, kwargs[key])
+        if(not self.timestamp):
+            self.timestamp = util_funcs.to_utc_timestamp_millis(datetime.now())
             
     def to_son(self):
         ret = self.__dict__
@@ -179,14 +180,14 @@ class Node():
         return cookies.create_signed_value(config.SERVER_SECRET, config.SERVER_AUTH_KEY_STRING  , json_util.dumps({"node_id":node_id, "connection_id":connection_id}))
     
     def get_connection(self,  node_id):#return physical connection object to forward the message to
-        
+        logger.debug("fetching connection for %s"%node_id)
         conn_list = self.connections.get(node_id)# get direct connection to node_id if exists
         if(conn_list):
             for conn in conn_list:
                 if len(conn.queue)<50:
                     return conn
         
-        is_server = db.is_server_node(node_id)                
+        is_server = db.is_server_node(node_id)             
         if(not is_server):#not reachable directly, we mean we cannot open connection to that
             if(conn_list):# just return whatever connection we have to that client
                 return conn_list[0] # althogh the queue size is high , we will reuse it , as we cannot make new connection to client directly
@@ -217,12 +218,15 @@ class Node():
         
         client_id = from_node.client_id
         
-        logger.debug("New connection from "+ from_node_id)
         conn = Connection(ws, from_node_id, client_id, connection_id)
         if(not connection_id):#anonymous connection
             conn.is_external_node = True
             
-        conn.connection_id  = connection_id = db.check_and_add_new_connection(connection_id , from_node_id , current_node.node_id)
+        connection_id = db.check_and_add_new_connection(connection_id , from_node_id , current_node.node_id)
+        conn.connection_id = connection_id
+        
+        logger.debug("New connection from "+ from_node_id+ " connection_id :: "+connection_id)
+
         if(connection_id):
             temp = self.connections.get(from_node_id, None)
             if(not temp):
@@ -245,13 +249,14 @@ class Node():
         msg = msg_obj or Message(**json_util.loads(msg))
         
         from_conn = None
+        current_datetime = datetime.now()
         if(ws):
             from_conn = self.connections_ws[ws]
-            from_conn.last_msg_recv_time = datetime.now()
+            from_conn.last_msg_recv_time = current_datetime
             if(from_conn.is_external_node):# set the src if only if from external_nodefor delivery reports
                 msg.src_id = from_conn.to_node_id
                 msg.src_client_id = from_conn.client_id
-                msg.timestamp = util_funcs.toUtcTimestamp(datetime.now())
+                msg.timestamp = util_funcs.to_utc_timestamp_millis(current_datetime)
    
         logger.debug("message recieved from "+msg.src_id)
         
@@ -276,7 +281,7 @@ class Node():
                 fetch_inbox_messages = user_service_request.get('fetch_inbox_messages',None)
                 
                 
-                
+                user_time_stamp = user_service_request.get("timestamp", msg.timestamp)
                 if(update_gcm_key):
                     logger.debug("updating gcm key: "+ update_gcm_key +" "+from_conn.to_node_id)
                     db.update_android_gcm_key(msg.src_id, update_gcm_key)
@@ -286,9 +291,9 @@ class Node():
                     fetch_inbox_messages_to_seq = user_service_request.get("fetch_inbox_messages_to_seq",-1)
                     fetch_inbox_messages_from_timestamp = user_service_request.get("fetch_inbox_messages_from_time_stamp",None)
                     if(fetch_inbox_messages_from_timestamp):
-                        fetch_inbox_messages_from_timestamp = datetime.fromtimestamp(fetch_inbox_messages_from_timestamp)
+                        fetch_inbox_messages_from_timestamp = datetime.utcfromtimestamp(fetch_inbox_messages_from_timestamp/1000.0)
                     messages, from_seq , to_seq, has_more = db.fetch_inbox_messages(msg.src_id, fetch_inbox_messages_from_seq, fetch_inbox_messages_to_seq, fetch_inbox_messages_from_timestamp)
-                    payload = json_util.dumps({"messages":messages, "from_seq":from_seq, "to_seq":to_seq, "more":has_more})
+                    payload = json_util.dumps({"messages":messages, "from_seq":from_seq, "to_seq":to_seq, "more":has_more, "server_timestamp_add_diff":util_funcs.to_utc_timestamp_millis(current_datetime)-user_time_stamp})
                     from_conn.send(json_util.dumps(Message(type=-102, payload=payload).to_son()))
             return
         
@@ -301,12 +306,12 @@ class Node():
                 conn = self.get_connection(dest_id)
                 if(not conn): 
                     logger.debug("Could not send, putting into db, and notifying user about new messages")
-                    db.add_pending_messages(dest_id, msg.type, json_util.dumps(msg.to_son()))
-                    self.send_a_ting(dest_id)
+                    db.add_pending_messages(dest_id, msg.type, json_util.dumps(msg.to_son()), current_datetime)
+                    self.send_a_ting(dest_id, msg)
                     #send a push notification to open and fetch any pending messages
                     break # cannot find any connection
                 try:
-                    if((datetime.now() - conn.last_msg_recv_time).total_seconds()>20*60):#20 minutes no ping
+                    if((current_datetime - conn.last_msg_recv_time).total_seconds()>30*60):#20 minutes no ping
                         raise Exception("Not ping recieved , stale connection")#probably a stale connection 
                     
                     msg.dest_id = dest_id
@@ -316,36 +321,48 @@ class Node():
                 except Exception as e:
                     #keep it in db to send it later
                     logger.error(sys.exc_info())
-                    self.destroy_connection(conn.ws)
+                    self.destroy_connection(conn.ws, conn_obj=conn)
                     logger.debug("An exception occured while sending, retrying with another connection")
                     
           
     
-    def send_a_ting(self, dest_id):
+    def send_a_ting(self, dest_id , msg=None):
         #put to a queue
         node = db.get_node_by_id(dest_id)
         if(not node):
             logger.debug("node not yet registered")
             return
         gcm_key = node.get("gcm_key", None)
-        if(gcm_key):
+        if(gcm_key and node.get("last_push_sent", config.EPOCH_DATETIME)+timedelta(minutes=120)<datetime.now()):
+            node["last_push_sent"] = datetime.now()
             logger.debug("sending a push notification")
             GCM_HEADERS ={'Content-Type':'application/json',
                           'Authorization':'key='+config.GCM_API_KEY 
                          }
             
-            packetData={"message":"You have pending messages",
+            title = "You have pending messages"
+            if(msg and msg.type==1):
+                title = msg.payload
+                
+            if(msg and msg.type==2):
+                title = "Sent you a poke"
+                
+                
+            packetData={"message":title,
+                        "payload1":"" if not msg else msg.src_id,
                         "notification_type": 101
                         }
             registrationIds =[
                               gcm_key
             ]
             data = {"registration_ids":registrationIds,"data":packetData }
-                        
+            logger.debug(registrationIds)
             post= json_util.dumps(data)
             headers = GCM_HEADERS
             ret=get_data('https://android.googleapis.com/gcm/send',post,headers).read()
-            
+            logger.debug(ret)
+        else:
+            logger.debug("too soon to send another push notification")
             
     
     
@@ -366,7 +383,7 @@ class Node():
         to_node = util_funcs.from_kwargs(Node, **db.get_node_by_id(to_node_id))
         connection_id = db.add_connection(current_node.node_id, to_node_id)
         try:
-            ws = create_connection("ws://"+to_node.addr+":"+to_node.port+"/connect?auth_key="+Node.get_connection_auth_key(current_node.node_id, connection_id))
+            ws = create_connection("ws://"+to_node.addr+":"+to_node.port+CONNECT_PATH+"?auth_key="+Node.get_connection_auth_key(current_node.node_id, connection_id))
             ws.settimeout(5)
             conn = self.on_new_connection(ws, to_node, connection_id)
             #TODO: keep recieving for on close may be ?
@@ -379,21 +396,25 @@ class Node():
         return None
     
     
-    def destroy_connection(self, ws):
+    def destroy_connection(self, ws, conn_obj=None):
+#         for line in traceback.format_stack():
+#             print(line.strip())
         conn = self.connections_ws.get(ws,None)
-        if(not conn): return
-        del self.connections_ws[ws]
-        
-        try:
-            ws.close()
-        except Exception as ex:
-            pass
-
+        if(conn):
+            del self.connections_ws[ws]
+        else:
+            if(not conn_obj):# no connection object passed
+                return
+            conn = conn_obj
         
         db.remove_connection(conn.connection_id)
         
         current_node.connections.get(conn.to_node_id).remove(conn)
         logger.debug(current_node.node_id+": destroying "+ conn.connection_id+ " with node "+ conn.to_node_id)
+        try:
+            ws.close()
+        except Exception as ex:
+            pass
                 
    
 
@@ -450,8 +471,9 @@ class InstaKnow(WebSocketApplication):
             return
         auth_key = auth_key[0]
         from_node_id , connection_id  = Node.get_connection_info(auth_key)
-
-        from_node = util_funcs.from_kwargs(Node, **db.get_node_by_id(from_node_id, strict_check=False))
+        node_obj = db.get_node_by_id(from_node_id, strict_check=False)
+        node_obj["last_push_sent"] = EPOCH_DATETIME
+        from_node = util_funcs.from_kwargs(Node, **node_obj)
         if(self.query_params.get("get_pre_connection_info",None)):
             client_id = from_node.client_id
             session_id = self.query_params.get("session_id", None)

@@ -108,8 +108,9 @@ class Db():
 
     def get_node_with_connection_to(self, node_id):
         ret = []
-        query = ConnectionEntity.query(ndb.OR(ConnectionEntity.from_node_key==ndb.Key('NodeEntity', node_id),
-                                       ConnectionEntity.to_node_key==ndb.Key('NodeEntity', node_id)))
+        query = ConnectionEntity.query(#ndb.OR(ConnectionEntity.from_node_key==ndb.Key(NodeEntity, node_id),
+                                       ConnectionEntity.to_node_key==ndb.Key(NodeEntity, node_id))
+                                    #)
         connections = query.fetch()
         for conn in connections:
             ret.append(conn.to_node_key.id() if conn.from_node_key.id() == node_id else conn.from_node_key.id())
@@ -124,23 +125,19 @@ class Db():
             return connection_id
 
     def is_server_node(self, node_id):
-        node = self.node_cache.get(node_id)
-        if(not node):
-            node = self.get_node_by_id(node_id)
-            self.node_cache.set(node_id , node)
-            
+        node = self.get_node_by_id(node_id)
         return node and node.get('addr', None) != None
 
     def add_connection(self, node_id1, node_id2):
         connection_id = util_funcs.get_random_id(10)
         # TODO: check if already exists
-        conn = ConnectionEntity(id=connection_id, connection_id=connection_id , from_node_key = ndb.Key('NodeEntity', node_id1),
-                                to_node_key = ndb.Key('NodeEntity', node_id2))
+        conn = ConnectionEntity(id=connection_id, connection_id=connection_id , from_node_key = ndb.Key(NodeEntity, node_id1),
+                                to_node_key = ndb.Key(NodeEntity, node_id2))
         conn.put()
         return connection_id
 
     def remove_connection(self, connection_id):
-        key = ndb.Key('ConnectionEntity', connection_id)
+        key = ndb.Key(ConnectionEntity, connection_id)
         key.delete()
         
         
@@ -154,7 +151,7 @@ class Db():
 
     def get_node_ids_for_session(self, session_id):
         ret = []
-        query = SessionNodesEntity.query(SessionNodesEntity.session_key==ndb.Key('SessionEntity', session_id))
+        query = SessionNodesEntity.query(SessionNodesEntity.session_key==ndb.Key(SessionEntity, session_id))
         session_nodes = query.fetch()
         for i in session_nodes:
             ret.append(i.node_key.id())
@@ -203,18 +200,19 @@ class Db():
         return session_id
 
     def join_session(self, session_id, node_id):
-        session_node = SessionNodesEntity(id=session_id + "__" + node_id, session_key=ndb.Key('SessionEntity', session_id),
-                                          node_key=ndb.Key('NodeEntity', node_id))
+        session_node = SessionNodesEntity(id=session_id + "__" + node_id, session_key=ndb.Key(SessionEntity, session_id),
+                                          node_key=ndb.Key(NodeEntity, node_id))
         session_node.put()
 
 #     def remove_client_nodes(self, client_id):
 #         self.nodes.remove({"client_id": client_id})
                     
-    def add_pending_messages(self, node_id, message_type, message):  
-        return UserInboxMessage.add_inbox_message(ndb.Key('UserEntity', node_id), message_type, message )
+    def add_pending_messages(self, node_id, message_type, message, created_at=None):
+        return UserInboxMessage.add_inbox_message(ndb.Key('UserEntity', node_id), message_type, message , created_at = created_at)
             
     def fetch_inbox_messages(self, node_id , from_seq=-1, to_seq = -1,  last_message_seen_time=None):   
-        return UserInboxMessage.get_inbox_messages(ndb.Key('UserEntity', node_id), from_seq, to_seq, last_message_seen_time)
+        user_inbox_messages , from_seq, to_seq, more =  UserInboxMessage.get_inbox_messages(ndb.Key('UserEntity', node_id), from_seq, to_seq, last_message_seen_time)
+        return map(lambda inbox_message: inbox_message.message_payload , user_inbox_messages), from_seq, to_seq, more
 
 
 

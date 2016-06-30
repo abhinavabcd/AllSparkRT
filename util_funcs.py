@@ -34,4 +34,10 @@ def toUtcTimestamp(dt):
     except:
         return 0
   
-
+def to_utc_timestamp_millis(dt):
+    try:
+        td = dt - EPOCH_DATETIME
+        # return td.total_seconds()
+        return  int((td.microseconds + (td.seconds + td.days * 24 * 3600) * 10**6) / 1e3)
+    except:
+        return 0
