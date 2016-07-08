@@ -1,7 +1,4 @@
-import datetime
-import logging
 from google.appengine.ext import ndb
-import re
 from config import DBTABLE_PREFIX
 
 class TimeTrackedModel(ndb.Model):

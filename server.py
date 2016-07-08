@@ -16,25 +16,30 @@ connections are edges between them , we can put stuff into the connection queue
 
 
 '''
+
+
+
+
 import gevent
 from gevent import monkey
+import collections
+from ws_server import WebSocketServerHandler
+from socket import errno
+import socket
+monkey.patch_all()
 import util_funcs
 import sys
 from datetime import date, datetime, timedelta
-from time import sleep
+import time
 import urllib
 from urllib_utils import get_data
-import traceback
 from config import EPOCH_DATETIME
-monkey.patch_all()
-
+from gevent.server import StreamServer
 
 from websocket import create_connection , WebSocket
 
 
 from gevent.lock import BoundedSemaphore
-from geventwebsocket.server import WebSocketServer
-from geventwebsocket.resource import Resource, WebSocketApplication
 
 
 
@@ -48,56 +53,80 @@ import re
 import cookies
 from bson import json_util
 
-from database_ndb import Db
+from database_mongo import Db
+
 
 import config
 
 db = Db()
 
-
+max_assumed_sent_buffer_time = 100 #seconds # TCP_USER_TIMEOUT kernel setting
 
 current_node = None
-
+request_handlers = []
 MONOCAST_DIRECTLY = 1
 BROADCAST_ALL = 2
 
 
     
 class Connection(WebSocket):
-    queue = []# to keep track of how many greenlets are waiting on semaphore to send 
+    queue = None# to keep track of how many greenlets are waiting on semaphore to send 
+    msg_assumed_sent = None# queue for older sent messages in case of reset we try to retransmit
     ws = None
     from_node_id = None
     to_node_id = None
     lock = BoundedSemaphore()
     is_stale = False
     connection_id = None
-    is_external_node = False    
-    last_msg_recv_time = None
+    is_external_node = False
+    last_msg_recv_timestamp = None
     
     def __init__(self, ws,  to_node_id, client_id , connection_id):
         self.ws = ws
+        self.queue = collections.deque()# to keep track of how many greenlets are waiting on semaphore to send 
+        self.msg_assumed_sent = collections.deque()# queue for older sent messages in case of reset we try to retransmit
+   
+   
         self.to_node_id = to_node_id
         self.client_id = client_id
         self.connection_id = connection_id
-        self.last_msg_recv_time =  datetime.now()
+        self.last_msg_recv_timestamp =  time.time()*1000
         if(not connection_id):# mean we are getting this from an unknown one sided party
             self.is_external_node = True
         
         
-    def send(self, msg): # msg is only string data
-        self.queue.append(msg)
+    def send(self, msg, ref=None): # msg is only string data , #ref is used , just in case an exception occurs , we pass that ref 
+        if(self.is_stale):
+            raise Exception("stale connection")
+        
+        self.queue.append((ref, msg))
+        if(self.lock.locked()):
+            return
+        
         self.lock.acquire()
-        try:
+        data_ref = None
+        data = None
+        try:            
             while(not self.is_stale and len(self.queue)>0):
-                data = self.queue.pop(0)
+                data_ref, data = self.queue.popleft() #peek
                 self.ws.send(data) # msg objects only
-        except:
-            logger.debug("Error occured while sending, closing connection")
-            if(not self.is_stale):
-                current_node.destroy_connection(self.ws)
-            self.is_stale = True
+                current_timestamp = time.time()
+                while(len(self.msg_assumed_sent)>0 and self.msg_assumed_sent[0][0]<current_timestamp-max_assumed_sent_buffer_time):
+                    self.msg_assumed_sent.popleft()
+                
+                self.msg_assumed_sent.append((current_timestamp , data_ref, data))
+                
+                logger.debug("message sent to "+self.to_node_id)
             
-        self.lock.release()
+        except  Exception as ex:
+            #chuck back in the queue msg , because we couln't sent, you see reliability : P
+            logger.debug("Error occured while sending, closing connection")            
+            if(not self.is_stale):
+                self.is_stale = True
+            current_node.destroy_connection(self.ws)
+            
+        finally:
+            self.lock.release()
         return not self.is_stale
             
         
@@ -162,7 +191,13 @@ class Node():
                         pass
             time_elapsed = (datetime.now() - last_ping_sent).total_seconds()
             logger.debug("sent a heartbeat")
-            gevent.sleep(max(0 , 30*60 - (time_elapsed))) # 10 minutes send a heart beat
+            gevent.sleep(max(0 , 20*60 - (time_elapsed))) # 10 minutes send a heart beat
+            
+    
+    def refresh_stats(self):
+        while(True):
+            db.update_node_stats(self.node_id, num_connections = len(self.connections))
+            gevent.sleep(5*60)#10 minutes
             
             
             
@@ -180,18 +215,22 @@ class Node():
         return cookies.create_signed_value(config.SERVER_SECRET, config.SERVER_AUTH_KEY_STRING  , json_util.dumps({"node_id":node_id, "connection_id":connection_id}))
     
     def get_connection(self,  node_id):#return physical connection object to forward the message to
-        logger.debug("fetching connection for %s"%node_id)
         conn_list = self.connections.get(node_id)# get direct connection to node_id if exists
         if(conn_list):
             for conn in conn_list:
                 if len(conn.queue)<50:
+                    logger.debug("using connection for %s %s"%(node_id, conn.connection_id))
                     return conn
         
-        is_server = db.is_server_node(node_id)             
+        is_server = db.is_server_node(node_id)
+        if(is_server==None):
+            return None
         if(not is_server):#not reachable directly, we mean we cannot open connection to that
             if(conn_list):# just return whatever connection we have to that client
-                return conn_list[0] # althogh the queue size is high , we will reuse it , as we cannot make new connection to client directly
-            
+                conn = conn_list[0] # althogh the queue size is high , we will reuse it , as we cannot make new connection to client directly
+                logger.debug("using connection for %s %s"%(node_id, conn.connection_id))
+                return conn
+                
             #check for any intermediate node that it is connected to
             intermediate_node_id = db.get_node_with_connection_to(node_id)
             if(intermediate_node_id==None or intermediate_node_id==current_node.node_id):
@@ -249,16 +288,17 @@ class Node():
         msg = msg_obj or Message(**json_util.loads(msg))
         
         from_conn = None
-        current_datetime = datetime.now()
+        current_timestamp = time.time()*1000
         if(ws):
             from_conn = self.connections_ws[ws]
-            from_conn.last_msg_recv_time = current_datetime
+            from_conn.last_msg_recv_timestamp = current_timestamp
             if(from_conn.is_external_node):# set the src if only if from external_nodefor delivery reports
                 msg.src_id = from_conn.to_node_id
                 msg.src_client_id = from_conn.client_id
-                msg.timestamp = util_funcs.to_utc_timestamp_millis(current_datetime)
+                msg.timestamp = int(current_timestamp) # millis
    
-        logger.debug("message recieved from "+msg.src_id)
+        if(msg.src_id):
+            logger.debug("message recieved from "+msg.src_id)
         
         dest_ids = []
         if(msg.dest_id):# single node
@@ -289,12 +329,11 @@ class Node():
                 if(fetch_inbox_messages):
                     fetch_inbox_messages_from_seq = user_service_request.get("fetch_inbox_messages_from_seq",-1)
                     fetch_inbox_messages_to_seq = user_service_request.get("fetch_inbox_messages_to_seq",-1)
-                    fetch_inbox_messages_from_timestamp = user_service_request.get("fetch_inbox_messages_from_time_stamp",None)
-                    if(fetch_inbox_messages_from_timestamp):
-                        fetch_inbox_messages_from_timestamp = datetime.utcfromtimestamp(fetch_inbox_messages_from_timestamp/1000.0)
+                    fetch_inbox_messages_from_timestamp = user_service_request.get("fetch_inbox_messages_from_time_stamp",0)
+                    
                     messages, from_seq , to_seq, has_more = db.fetch_inbox_messages(msg.src_id, fetch_inbox_messages_from_seq, fetch_inbox_messages_to_seq, fetch_inbox_messages_from_timestamp)
-                    payload = json_util.dumps({"messages":messages, "from_seq":from_seq, "to_seq":to_seq, "more":has_more, "server_timestamp_add_diff":util_funcs.to_utc_timestamp_millis(current_datetime)-user_time_stamp})
-                    from_conn.send(json_util.dumps(Message(type=-102, payload=payload).to_son()))
+                    payload = json_util.dumps({"messages":messages, "from_seq":from_seq, "to_seq":to_seq, "more":has_more, "server_timestamp_add_diff":int(current_timestamp-user_time_stamp)})
+                    from_conn.send(json_util.dumps(Message(type=-102, payload=payload, dest_id=from_conn.to_node_id).to_son()))
             return
         
 #         if(db.is_valid_node_fwd(msg.src_id, msg.dest_id)):
@@ -304,19 +343,18 @@ class Node():
             
             while(True):#loops through connections until you can send the message it once
                 conn = self.get_connection(dest_id)
+                msg.dest_id = dest_id
                 if(not conn): 
                     logger.debug("Could not send, putting into db, and notifying user about new messages")
-                    db.add_pending_messages(dest_id, msg.type, json_util.dumps(msg.to_son()), current_datetime)
+                    db.add_pending_messages(msg.dest_id, msg.type, json_util.dumps(msg.to_son()), current_timestamp)
                     self.send_a_ting(dest_id, msg)
                     #send a push notification to open and fetch any pending messages
                     break # cannot find any connection
                 try:
-                    if((current_datetime - conn.last_msg_recv_time).total_seconds()>30*60):#20 minutes no ping
+                    if(current_timestamp - conn.last_msg_recv_timestamp > 30*60*1000):#20 minutes no ping
                         raise Exception("Not ping recieved , stale connection")#probably a stale connection 
                     
-                    msg.dest_id = dest_id
-                    conn.send(json_util.dumps(msg.to_son())) # this could raise 
-                    logger.debug("message sent to "+dest_id)
+                    conn.send(json_util.dumps(msg.to_son()) , ref=msg) # this could raise 
                     break# successfully forwarded
                 except Exception as e:
                     #keep it in db to send it later
@@ -331,9 +369,14 @@ class Node():
         node = db.get_node_by_id(dest_id)
         if(not node):
             logger.debug("node not yet registered")
+            
+            msg = '{"dest_id":"'+msg.src_id+'", "type":-3, "src_id":"'+dest_id+'"}'
+            self.on_message(None, msg)
             return
+        
+        
         gcm_key = node.get("gcm_key", None)
-        if(gcm_key and node.get("last_push_sent", config.EPOCH_DATETIME)+timedelta(minutes=120)<datetime.now()):
+        if(gcm_key and node.get("last_push_sent", config.EPOCH_DATETIME)+timedelta(minutes=10)<datetime.now()):
             node["last_push_sent"] = datetime.now()
             logger.debug("sending a push notification")
             GCM_HEADERS ={'Content-Type':'application/json',
@@ -384,7 +427,7 @@ class Node():
         connection_id = db.add_connection(current_node.node_id, to_node_id)
         try:
             ws = create_connection("ws://"+to_node.addr+":"+to_node.port+CONNECT_PATH+"?auth_key="+Node.get_connection_auth_key(current_node.node_id, connection_id))
-            ws.settimeout(5)
+            #ws.settimeout(5)
             conn = self.on_new_connection(ws, to_node, connection_id)
             #TODO: keep recieving for on close may be ?
             gevent.spawn(recv_from_ws , ws, Node.on_message, Node.destroy_connection)
@@ -396,7 +439,7 @@ class Node():
         return None
     
     
-    def destroy_connection(self, ws, conn_obj=None):
+    def destroy_connection(self, ws, conn_obj=None, resend_last_msgs=False):
 #         for line in traceback.format_stack():
 #             print(line.strip())
         conn = self.connections_ws.get(ws,None)
@@ -407,9 +450,23 @@ class Node():
                 return
             conn = conn_obj
         
+        current_node.connections.get(conn.to_node_id).remove(conn)
         db.remove_connection(conn.connection_id)
         
-        current_node.connections.get(conn.to_node_id).remove(conn)
+        
+        
+        # retransmit messages onto other connections for this node
+        while(len(conn.queue)>0):
+            #these are all assumsed sent , so , insert them into db as pending messages
+            logger.debug("Could not send, retrying with another connections")
+            ref , data = conn.queue.popleft()
+            self.on_message(None, data, msg_obj= (ref if (type(ref) is Message) else None))
+        
+        while(resend_last_msgs and len(conn.msg_assumed_sent)>0):
+            timestamp , ref , data = conn.msg_assumed_sent.popleft()
+            self.on_message(None, data, msg_obj=  ref if (type(ref) is Message) else None)
+        
+        
         logger.debug(current_node.node_id+": destroying "+ conn.connection_id+ " with node "+ conn.to_node_id)
         try:
             ws.close()
@@ -417,88 +474,138 @@ class Node():
             pass
                 
    
+######websocket handling
 
-class Paths(Resource):
-    def __init__(self, apps=None):
-        Resource.__init__(self, apps=apps)
-        
-    def _app_by_path(self, environ_path, is_websocket_request):
-        # Which app matched the current path?
-        for path, app in self.apps.items():
-            match = re.match(path, environ_path)
-            if match:
-                if is_websocket_request == self._is_websocket_app(app):
-                    return app , match.groups()
-        return None , None
-
-    def __call__(self, environ, start_response):
-        environ = environ
-        is_websocket_call = 'wsgi.websocket' in environ
-        path_info = environ['PATH_INFO']
-        query_params = environ.get('QUERY_STRING',None)
-        if(query_params):
-            query_params = urlparse.parse_qs(query_params)
-            
-        current_app, args = self._app_by_path(path_info, is_websocket_call)
-
-        if current_app is None:
-            raise Exception("No apps defined")
-
-        if is_websocket_call:
-            ws = environ['wsgi.websocket']
-            current_app = current_app(ws, *args, query_params=query_params)
-            current_app.handle()
-            # Always return something, calling WSGI middleware may rely on it
-            return []
-        else:
-            return current_app(start_response, *args, query_params=query_params)
-
-
-
-class InstaKnow(WebSocketApplication):
-    query_params = None
-    ws = None
-    def __init__(self, ws, query_params=None):                
-        self.query_params = query_params
-        self.ws = ws
-        super(InstaKnow, self).__init__(ws)
-                
-    def on_open(self, *args, **kwargs):        
-        #TODO: query_params["auth_key"];
-        auth_key = self.query_params.get("auth_key",None)
-        if(not auth_key):
-            self.on_close(None)
-            return
-        auth_key = auth_key[0]
-        from_node_id , connection_id  = Node.get_connection_info(auth_key)
-        node_obj = db.get_node_by_id(from_node_id, strict_check=False)
-        node_obj["last_push_sent"] = EPOCH_DATETIME
-        from_node = util_funcs.from_kwargs(Node, **node_obj)
-        if(self.query_params.get("get_pre_connection_info",None)):
-            client_id = from_node.client_id
-            session_id = self.query_params.get("session_id", None)
-            # based on client_id , session_id , send a node details to connect to
-            if(session_id or client_id or True):
-                #TODO: logically decide a node use has to connect to
-                self.ws.send(json_util.dumps(current_node.__dict__))
-                
-            self.ws.close()
-                        
-        else:
-            self.ws.stream.handler.socket.settimeout(5)
-            current_node.on_new_connection(self.ws, from_node , connection_id)
+#new greenlet
+def websocket_handler(sock, query_params=None, headers= None):
     
-    def on_close(self, reason):
-        current_node.destroy_connection(self.ws)
+    auth_key = query_params.get("auth_key",None)
+    if(not auth_key):#need auth_key for sure
+        sock.close()
+        return
+    
+    auth_key = auth_key[0]
+    from_node_id , connection_id  = Node.get_connection_info(auth_key)
+    node_obj = db.get_node_by_id(from_node_id, strict_check=False)
+    node_obj["last_push_sent"] = EPOCH_DATETIME
+    from_node = util_funcs.from_kwargs(Node, **node_obj)
+    
+    
+
+    if(query_params.get("get_pre_connection_info",None)):
+        client_id = from_node.client_id
+        session_id = query_params.get("session_id", None)
+        # based on client_id , session_id , send a node details to connect to
+        if(session_id or client_id or True):
+            node = db.get_a_connection_node()
+            #TODO: logically decide a node use has to connect to
+            if(headers.get("Sec-WebSocket-Key", None)):
+                    ws = WebSocketServerHandler(sock, headers)#sends handshake automatically 
+                    ws.do_handshake(headers)
+                    ws.send(json_util.dumps(node))
+                    ws.close()
+            else:
+                write_data(sock, "HTTP/1.0 200 OK\r\n\r\n")
+                write_data(sock, json_util.dumps(node))
+                sock.close()
+                        
+    else:
+#           self.ws.stream.handler.socket.settimeout(5)
         
-    def on_message(self, msg):
-        if(msg!=None):
-            current_node.on_message(self.ws, msg)
+        ws = WebSocketServerHandler(sock, headers)#sends handshake automatically 
+        ws.handleClose = lambda ex: current_node.destroy_connection(ws, resend_last_msgs=(type(ex)==socket.error and (ex.errno == errno.ETIMEDOUT or ex.errno==errno.ECONNRESET)))
+        ws.handleConnected = lambda : current_node.on_new_connection(ws, from_node, connection_id)
+        ws.handleMessage = lambda : current_node.on_message(ws, ws.data)
+        
+        ws.do_handshake(headers)
+        ws.start_handling()
+    
+
+
+
+
+
+########inner functionality
+
+def write_data(socket, data):
+    n = 0
+    l = len(data)
+    while(n<l):
+        sent = socket.send(data[n:])
+        n += sent
+        if(sent<0):
+            break
+
+
+def read_line(socket):
+    data = ""
+    while(True):
+        byt = socket.recv(1)
+        data+=byt
+        if(byt=='\n' or not byt):
+            return data
+
+def handle_connection(socket, address): 
+    request_line = read_line(socket)
+    request_params = {}
+    try:
+        request_type , request_path , http_version = request_line.split(" ")
+        query_start_index = request_path.find("?")
+        if(query_start_index!=-1):
+            request_params = urlparse.parse_qs(request_path[query_start_index+1:])
+            request_path = request_path[:query_start_index]
             
+    except:
+        socket.close()
+        
+    logger.debug("new request" +  request_line)
+    headers = {}
+    while(True):
+        l = read_line(socket)
+        if(l=='\r\n'):
+            break
+        if( not l):
+            return
+        header_type , data  =  l.split(": ",1)
+        headers[header_type] = data
+        
+    if(request_type == "POST" and headers.get("Content-Length", None)):
+        n = int(headers.get("Content-Length","0").strip(" \r\n"))
+        if(n>0):
+            data = ""
+            while(len(data) < n):
+                bts = socket.recv(n)
+                if(not bts):
+                    break
+                data +=bts
+            if(request_params):
+                request_params.update(urlparse.parse_qs(data))
+            else:
+                request_params = urlparse.parse_qs(data)
+    ##app specific headers
+            
+    for handler in request_handlers:
+        
+        args = handler[0].match(request_path)
+        func = handler[1]
+        kwargs = {}
+        kwargs["query_params"] = request_params
+        kwargs["headers"] = headers
+        
+        if(args!=None):
+            fargs = args.groups()
+            if(fargs):
+                func(socket, *fargs , **kwargs)
+                return
+            else:
+                func(socket, **kwargs)
+                return
+
         
 
-def start_transport_server():
+def start_transport_server(handlers=[]):
     global current_node
+    global request_handlers
     db.init()        
     
     import argparse
@@ -526,6 +633,9 @@ def start_transport_server():
         return
     
     node_id = node_id or db.create_node(None, args.host_address, None, args.port)
+    
+    db.update_node_stats(node_id, num_connections=0, num_max_connections=7000)
+    
     current_node = util_funcs.from_kwargs(Node, **db.get_node_by_id(node_id))
     
     ## clear all connections to the node from db 
@@ -534,17 +644,24 @@ def start_transport_server():
     
     thread = gevent.spawn(current_node.send_heartbeat)# loop forever and send heartbeat every 10 minutes
     
-    WebSocketServer(
-    ('0.0.0.0', int(args.port)),
-
-    Paths(OrderedDict([
-        ('^/connectV2', InstaKnow), # /app/app_id is the websocket path
-    ])),
-
-    debug=False
-    ).serve_forever()
+    refresh_stats  = gevent.spawn(current_node.refresh_stats)# loop forever and send heartbeat every 10 minutes
+    db_periodic_flush = gevent.spawn(db.do_in_background)# loop forever and send heartbeat every 10 minutes
     
+   
+    for regex, handler in handlers:
+        if(isinstance(regex, str)):
+            regex = re.compile(regex)
+        request_handlers.append((regex, handler))
+    
+    
+    request_handlers.sort(key = lambda x:x[0] , reverse=True)
+    
+    server = StreamServer(
+    ('', int(args.port)), handle_connection)
+    
+    
+    server.serve_forever()    
 
 if __name__ =="__main__":
-    start_transport_server()
+    start_transport_server([('^/connectV2', websocket_handler)])
     

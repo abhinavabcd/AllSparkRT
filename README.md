@@ -1,8 +1,8 @@
-InstaKnow server:-   Scalable realtime messaging service. 
+InstaKnow server:-   Scalable realtime messaging reouter , where every message has a src and dest id's set and this server reads messages and routes them appropriately to relevant connections. 
 
 #Core concepts:
 1.  Node: Every server , device on the network  is a node , which must have an unique node id.
-2.  Connection:  represents from_node_id  , to_node_id , which is basically edge on the graph. Each of these edge/connections is addressable by connection_id.
+2.  Connection:  represents from_node_id  , to_node_id , which is basically edge on the graph. Each of these edge/connections is addressable by connection_id and has a send queue , where the messages to be sent are put into.
 3.  You can create connections to nodes if they have addresses.
 4:  Client: client can have multiple nodes. Just like you have a computer, mobile , etc .
 5.  Session: basically a group of nodes together are inside a session.
@@ -33,7 +33,9 @@ Each send message should have a dest_id , dest_client_id or dest_session_id set 
 
 
 
-#This needs a basic database, Added google datastore connector.
+#Added google datastore connector and a generic mongodb connector.
 
 
+#websockets backed by gevent.
 
+#performance testing/benchmarking not yet done, contributors appreciated.

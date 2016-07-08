@@ -7,7 +7,8 @@ import datetime
 
 APPLICATION_NAME = "InstaKnow"
 
-SERVER_SECRET = "_______ADD_A_SECRET____"
+SERVER_SECRET = "some_secret_key_here"#"asdsadkjhsakjdhjksadasdasd"
+
 SERVER_AUTH_KEY_STRING = "user_key"
 
 DB_NAME = "instaknow"

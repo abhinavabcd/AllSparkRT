@@ -3,6 +3,7 @@ Created on May 23, 2016
 
 @author: abhinav
 '''
+import gevent
 
 
 ### node ###
@@ -55,16 +56,14 @@ remote_api_stub.ConfigureRemoteApiForOAuth(
      key_file_path='Samosa-1927925e9abc.p12')
 
 
-import config
 import util_funcs
-from bson import json_util
 from google.appengine.ext import ndb
 from lru_cache import LRUCache
 from models_ndb import NodeEntity, ConnectionEntity, SessionNodesEntity,\
     SessionEntity
-
-import os
+from datetime import datetime
 from models.users import UserInboxMessage
+from logger import logger
 
 
 class Db():
@@ -72,8 +71,20 @@ class Db():
     node_cache = LRUCache(10000) #lets say for fun c10k
 
     def init(self):
+        self.ndb_transactions_queue = []
         pass
-
+    
+    def do_in_background(self):
+        while(True):
+            while(len(self.ndb_transactions_queue)>0):
+                try:
+                    self.ndb_transactions_queue.pop(0).get_result()
+                except:
+                    logger.error("An error occured in db..")
+            
+            gevent.sleep(5)
+            
+            
     def get_node_by_id(self, node_id, strict_check=True):
         node = self.node_cache.get(node_id)
         if(node):
@@ -87,7 +98,7 @@ class Db():
                 return None
             else:
                 node = NodeEntity(id=node_id, node_id=node_id)
-                node.put()
+                self.ndb_transactions_queue.append(node.put_async())
                 
         ret =  node.to_dict() # returns a dict object
         ret["node_id"] = node.key.id()
@@ -97,7 +108,7 @@ class Db():
     def update_android_gcm_key(self, node_id, android_gcm_key):
         node = NodeEntity.get_by_id(node_id)
         node.gcm_key = android_gcm_key
-        node.put()
+        self.ndb_transactions_queue.append(node.put_async())
         #update cache
         ret =  node.to_dict() # returns a dict object
         ret["node_id"] = node.key.id()
@@ -133,12 +144,12 @@ class Db():
         # TODO: check if already exists
         conn = ConnectionEntity(id=connection_id, connection_id=connection_id , from_node_key = ndb.Key(NodeEntity, node_id1),
                                 to_node_key = ndb.Key(NodeEntity, node_id2))
-        conn.put()
+        self.ndb_transactions_queue.append(conn.put_async())
         return connection_id
 
     def remove_connection(self, connection_id):
         key = ndb.Key(ConnectionEntity, connection_id)
-        key.delete()
+        self.ndb_transactions_queue.append(key.delete_async())
         
         
     def get_node_ids_by_client_id(self, client_id):
@@ -160,7 +171,7 @@ class Db():
     def create_node(self, client_id, addr, addr_internal, port):
         node_id = ((client_id + "__") if client_id else "") + util_funcs.get_random_id(10)
         node = NodeEntity(id=node_id, node_id=node_id , client_id=client_id, addr = addr, addr_internal=addr_internal, port=port)
-        node.put()
+        self.ndb_transactions_queue.append(node.put_async())
         return node_id
     
     
@@ -191,26 +202,40 @@ class Db():
         return None
 
     def clear_connections_to_node_from_db(self, node_id):
-        pass
+        PAGE_SIZE = 200
+        more = True
+        cursor = None
+        query =  ConnectionEntity.query(ConnectionEntity.to_node_key==ndb.Key(NodeEntity, node_id))
+        
+        while(more):
+            entities, cursor, more = query.fetch_page(PAGE_SIZE,\
+                                                          start_cursor=cursor,\
+                                                          produce_cursors=True,\
+                                                          keys_only=True)
+            count  = len(entities)
+            ndb.delete_multi(entities)
+            print "deleted connections:"+str(count)
 
     def create_session(self, name, description, client_id):
         session_id = util_funcs.get_random_id(10)
         session = SessionEntity(id=session_id, session_id=session_id,  name=name, description=description, client_id=client_id)
-        session.put()
+        self.ndb_transactions_queue.append(session.put_async())
         return session_id
 
     def join_session(self, session_id, node_id):
         session_node = SessionNodesEntity(id=session_id + "__" + node_id, session_key=ndb.Key(SessionEntity, session_id),
                                           node_key=ndb.Key(NodeEntity, node_id))
-        session_node.put()
+        self.ndb_transactions_queue.append(session_node.put_async())
 
 #     def remove_client_nodes(self, client_id):
 #         self.nodes.remove({"client_id": client_id})
                     
-    def add_pending_messages(self, node_id, message_type, message, created_at=None):
+    def add_pending_messages(self, node_id, message_type, message, current_timestamp=0):
+        created_at = datetime.utcfromtimestamp(current_timestamp/1000.0)
         return UserInboxMessage.add_inbox_message(ndb.Key('UserEntity', node_id), message_type, message , created_at = created_at)
             
-    def fetch_inbox_messages(self, node_id , from_seq=-1, to_seq = -1,  last_message_seen_time=None):   
+    def fetch_inbox_messages(self, node_id , from_seq=-1, to_seq = -1,  last_message_seen_timestamp=None):   
+        last_message_seen_time = datetime.utcfromtimestamp(last_message_seen_timestamp/1000.0)
         user_inbox_messages , from_seq, to_seq, more =  UserInboxMessage.get_inbox_messages(ndb.Key('UserEntity', node_id), from_seq, to_seq, last_message_seen_time)
         return map(lambda inbox_message: inbox_message.message_payload , user_inbox_messages), from_seq, to_seq, more
 
