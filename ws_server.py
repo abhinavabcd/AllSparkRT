@@ -5,7 +5,6 @@ Created on Jul 7, 2016
 '''
 
 import sys
-from logger import logger
 VER = sys.version_info[0]
 import base64
 import hashlib
@@ -58,10 +57,6 @@ class WebSocketServerHandler(object):
 
    def __init__(self, sock, headers):
       self.client = sock
-      
-      timeval = struct.pack('ll', 5, 0)
-      sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, timeval)
-      
       self.handshaked = False
 
       self.fin = 0
@@ -93,8 +88,6 @@ class WebSocketServerHandler(object):
             try:
                self._handleData()
             except (socket.error, Exception) as ex:
-               #close socket
-               logger.debug(ex)
                self.client.close()
                self.handleClose(ex)
                break
@@ -290,9 +283,8 @@ class WebSocketServerHandler(object):
          try:
             # i should be able to send a bytearray
             sent = self.client.send(buff[already_sent:])
-            logger.debug("data sent tbytes "+str(sent))
             if sent == 0:
-               raise errno.ECONNRESET
+               raise RuntimeError('socket connection broken')
 
             already_sent += sent
             tosend -= sent

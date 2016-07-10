@@ -119,7 +119,6 @@ class Connection(WebSocket):
                 logger.debug("message sent to "+self.to_node_id)
             
         except  Exception as ex:
-            #chuck back in the queue msg , because we couln't sent, you see reliability : P
             logger.debug("Error occured while sending, closing connection")            
             if(not self.is_stale):
                 self.is_stale = True
@@ -191,7 +190,7 @@ class Node():
                         pass
             time_elapsed = (datetime.now() - last_ping_sent).total_seconds()
             logger.debug("sent a heartbeat")
-            gevent.sleep(max(0 , 20*60 - (time_elapsed))) # 10 minutes send a heart beat
+            gevent.sleep(max(0 , 10*60 - (time_elapsed))) # 10 minutes send a heart beat
             
     
     def refresh_stats(self):
@@ -249,7 +248,14 @@ class Node():
                     pass
                 c-=1
             return None
-        
+    
+    
+    def send_ping(self, conn):
+        if(conn):
+            ping_json = json_util.dumps(Message(src_id=self.node_id).to_son())
+            conn.send(ping_json)
+    
+    
     #called by the underlying websockets
     def on_new_connection(self, ws, from_node, connection_id):
         
@@ -273,6 +279,10 @@ class Node():
                 self.connections[from_node_id] = temp
             temp.append(conn)
             self.connections_ws[ws] = conn
+            for prev_conn in temp:
+                if(conn!=prev_conn):
+                    self.send_ping(prev_conn)
+                    
             return conn
         else:
             ws.close()

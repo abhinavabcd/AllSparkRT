@@ -34,7 +34,6 @@ class Db():
     node_cache = LRUCache(10000)
     user_seq_cache = LRUCache(10000)
     def init(self):
-#         client = MongoClient("mongodb://abhinav:%24samosa%24@104.199.129.250/samosa_messaging_v2")
         client = MongoClient("mongodb://127.0.0.1/")
         self.db = client[config.DB_NAME]
         self.nodes = self.db["nodes"]
@@ -83,7 +82,7 @@ class Db():
         
         
     def get_a_connection_node(self):
-        nodes = self.nodes.find({"$and" : [{"$where": "this.num_connections < this.num_max_connections" } ,{"$where":"this.last_stats_refresh_timestamp > "+str(int(time.time()) - 5*60 +1 )} ]}).sort([("_id",1)])
+        nodes = self.nodes.find({"addr": {"$ne": None} , "last_stats_refresh_timestamp" :{"$gt" : int(time.time()) - 5*60 +1  }, "$where": "this.num_connections < this.num_max_connections" }).sort([("_id",1)])
         for i in nodes:
             return i
         return self.nodes.find({})[0]
