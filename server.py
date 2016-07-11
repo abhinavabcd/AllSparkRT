@@ -157,7 +157,7 @@ class Message():
         for key in kwargs:
             setattr(self, key, kwargs[key])
         if(not self.timestamp):
-            self.timestamp = util_funcs.to_utc_timestamp_millis(datetime.now())
+            self.timestamp = int(time.time())
             
     def to_son(self):
         ret = self.__dict__
@@ -184,7 +184,7 @@ class Node():
     
     
     def send_heartbeat(self):
-        ping_json = json_util.dumps(Message(src_id=self.node_id).to_son())
+        ping_json = json_util.dumps({"src_id":self.node_id})
         while(True):
             last_ping_sent = datetime.now()
             for node_id in self.connections.keys():
