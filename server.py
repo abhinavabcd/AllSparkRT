@@ -80,6 +80,8 @@ class Connection(WebSocket):
     connection_id = None
     is_external_node = False
     last_msg_recv_timestamp = None
+    last_msg_sent_timestamp = None
+    
     
     def __init__(self, ws,  to_node_id, client_id , connection_id):
         self.ws = ws
@@ -111,6 +113,8 @@ class Connection(WebSocket):
                 data_ref, data = self.queue.popleft() #peek
                 self.ws.send(data) # msg objects only
                 current_timestamp = time.time()
+                self.last_msg_sent_timestamp = current_timestamp
+                
                 while(len(self.msg_assumed_sent)>0 and self.msg_assumed_sent[0][0]<current_timestamp-max_assumed_sent_buffer_time):
                     self.msg_assumed_sent.popleft()
                 
@@ -173,6 +177,7 @@ class Node():
     port = None
     ssl_enabled = None
     
+    _msg_recieved_counter = 0
     
     connections = {} # node_id -> list of connection to it
     connections_ws = {} # ws - > connection_obj
@@ -195,7 +200,8 @@ class Node():
     
     def refresh_stats(self):
         while(True):
-            db.update_node_stats(self.node_id, num_connections = len(self.connections))
+            db.update_node_info(self.node_id, num_connections = len(self.connections), num_msg_transfered=self._msg_recieved_counter)
+            self._msg_recieved_counter  = 0
             gevent.sleep(5*60)#10 minutes
             
             
@@ -295,13 +301,17 @@ class Node():
         ### A better solution is to use another auth_key for src_id and don't tamper        
         
         
-        msg = msg_obj or Message(**json_util.loads(msg))
+        if(msg_obj):
+            msg = msg_obj
+        else:
+            msg = Message(**json_util.loads(msg))
         
         from_conn = None
         current_timestamp = time.time()*1000
-        if(ws):
+        if(ws):#if no websocket, internal transfer only
             from_conn = self.connections_ws[ws]
             from_conn.last_msg_recv_timestamp = current_timestamp
+            self._msg_recieved_counter+=1
             if(from_conn.is_external_node):# set the src if only if from external_nodefor delivery reports
                 msg.src_id = from_conn.to_node_id
                 msg.src_client_id = from_conn.client_id
@@ -474,7 +484,8 @@ class Node():
         
         while(resend_last_msgs and len(conn.msg_assumed_sent)>0):
             timestamp , ref , data = conn.msg_assumed_sent.popleft()
-            self.on_message(None, data, msg_obj=  ref if (type(ref) is Message) else None)
+            if(ref):
+                self.on_message(None, data, msg_obj=ref if (type(ref) is Message) else None)
         
         
         logger.debug(current_node.node_id+": destroying "+ conn.connection_id+ " with node "+ conn.to_node_id)
@@ -505,11 +516,17 @@ def websocket_handler(sock, query_params=None, headers= None):
     if(query_params.get("get_pre_connection_info",None)):
         client_id = from_node.client_id
         session_id = query_params.get("session_id", None)
+        if(session_id):
+            session_id = session_id[0]
+        need_80_port = query_params.get("need_80_port", None)
+        if(need_80_port):
+            need_80_port = True
+            
         # based on client_id , session_id , send a node details to connect to
         if(session_id or client_id or True):
-            node = db.get_a_connection_node()
+            node = db.get_a_connection_node(need_80_port=need_80_port)
             #TODO: logically decide a node use has to connect to
-            if(headers.get("Sec-WebSocket-Key", None)):
+            if(headers.get("Sec-WebSocket-Key", None)):#through websocket
                     ws = WebSocketServerHandler(sock, headers)#sends handshake automatically 
                     ws.do_handshake(headers)
                     ws.send(json_util.dumps(node))
@@ -630,6 +647,9 @@ def start_transport_server(handlers=[]):
     parser.add_argument('--force',
                        help='force use same node config')
     
+    parser.add_argument('--proxy_80_port',
+                       help='proxy server to connect to this server')
+    
 
     args = parser.parse_args()
     
@@ -644,7 +664,8 @@ def start_transport_server(handlers=[]):
     
     node_id = node_id or db.create_node(None, args.host_address, None, args.port)
     
-    db.update_node_stats(node_id, num_connections=0, num_max_connections=7000)
+    
+    db.update_node_info(node_id, proxy_80_port= args.proxy_80_port , num_connections=0, num_max_connections=7000)
     
     current_node = util_funcs.from_kwargs(Node, **db.get_node_by_id(node_id))
     

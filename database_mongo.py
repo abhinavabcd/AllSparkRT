@@ -71,20 +71,39 @@ class Db():
         return node
             
 
-    def update_node_stats(self, node_id, num_connections=-1, num_max_connections=-1):
+    def update_node_info(self, node_id, proxy_80_port=None,  num_connections=-1, num_max_connections=-1, num_msg_transfered=-1):
         u = {"$set":{}}
         if(num_connections!=-1):
             u["$set"]["num_connections"] =  num_connections
         if(num_max_connections!=-1):
-            u["$set"]["num_max_connections"] =  num_max_connections        
+            u["$set"]["num_max_connections"] =  num_max_connections 
+        if(num_msg_transfered!=-1):
+            if(not u.get("$inc",None)):
+                u["$inc"] = {}
+            u["$inc"]["num_msg_transfered"] =  num_msg_transfered
+            u["$set"]["num_msg_transfer_rate"] =  num_msg_transfered       
+        
+        if(proxy_80_port!=None):
+            u["$set"]["proxy_80_port"] =  proxy_80_port
+        
+            
+        
         u["$set"]["last_stats_refresh_timestamp"] = int(time.time())
         self.nodes.update_one({"node_id":node_id} , u)
         
         
-    def get_a_connection_node(self):
-        nodes = self.nodes.find({"addr": {"$ne": None} , "last_stats_refresh_timestamp" :{"$gt" : int(time.time()) - 5*60 +1  }, "$where": "this.num_connections < this.num_max_connections" }).sort([("_id",1)])
+    def get_a_connection_node(self, need_80_port=False):
+        query = {"addr": {"$ne": None} , "last_stats_refresh_timestamp" :{"$gt" : int(time.time()) - 5*60 +1  }, "$where": "this.num_connections < this.num_max_connections" }
+        if(need_80_port):
+            query["proxy_80_port"] = {"proxy_80_port": {"$ne":None}}
+            
+        nodes = self.nodes.find().sort([("_id",1)])
         for i in nodes:
             return i
+
+        if(need_80_port):#but we couldn't find
+            return self.get_a_connection_node(need_80_port=False)
+        
         return self.nodes.find({})[0]
 
             
