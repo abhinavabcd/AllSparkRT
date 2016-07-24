@@ -33,8 +33,11 @@ class Db():
     
     node_cache = LRUCache(10000)
     user_seq_cache = LRUCache(10000)
-    def init(self):
-        client = MongoClient("mongodb://127.0.0.1/")
+    session_nod_ids_cache = LRUCache(100000)
+    
+    
+    def init(self, user_name="", password="", host="127.0.0.1", namespace=""):
+        client = MongoClient("mongodb://"+((user_name+":"+password+"@") if user_name else "" )+host+"/"+namespace)
         self.db = client[config.DB_NAME]
         self.nodes = self.db["nodes"]
         self.connections = self.db["connections"]        
@@ -53,9 +56,9 @@ class Db():
         
     
     # should return  a dict 
-    def get_node_by_id(self, node_id, strict_check = True):
+    def get_node_by_id(self, node_id, strict_check = True, force_refresh_from_db=False):
         node = self.node_cache.get(node_id)
-        if(node):
+        if(node and not force_refresh_from_db):
             return node
         
         node = self.nodes.find_one({"node_id":node_id})
@@ -72,11 +75,25 @@ class Db():
             
 
     def update_node_info(self, node_id, proxy_80_port=None,  num_connections=-1, num_max_connections=-1, num_msg_transfered=-1):
+        node = self.get_node_by_id(node_id)
         u = {"$set":{}}
+        
+        _can_join = 0
+        _max_connections = node["num_max_connections"] if node and node.get("num_max_connections",None) else 0
+        _num_connections = node["num_connections"] if node and node.get("num_connections",None) else 0
+        
         if(num_connections!=-1):
-            u["$set"]["num_connections"] =  num_connections
+            u["$set"]["num_connections"] = _num_connections= num_connections
         if(num_max_connections!=-1):
-            u["$set"]["num_max_connections"] =  num_max_connections 
+            u["$set"]["num_max_connections"] = _max_connections = num_max_connections 
+        
+        _can_join = _max_connections - _num_connections
+        u["$set"]["can_join"] = _can_join
+        
+        
+        
+            
+        
         if(num_msg_transfered!=-1):
             if(not u.get("$inc",None)):
                 u["$inc"] = {}
@@ -90,14 +107,17 @@ class Db():
         
         u["$set"]["last_stats_refresh_timestamp"] = int(time.time())
         self.nodes.update_one({"node_id":node_id} , u)
+        #refetch node from db
+    
+        node = self.get_node_by_id(node_id, force_refresh_from_db=True)
         
-        
+                
     def get_a_connection_node(self, need_80_port=False):
-        query = {"addr": {"$ne": None} , "last_stats_refresh_timestamp" :{"$gt" : int(time.time()) - 5*60 +1  }, "$where": "this.num_connections < this.num_max_connections" }
+        query = {"addr": {"$ne": None} , "last_stats_refresh_timestamp" :{"$gt" : int(time.time()) - 5*60 +1  }, "can_join": {"$gt": 0}}
         if(need_80_port):
             query["proxy_80_port"] = {"proxy_80_port": {"$ne":None}}
             
-        nodes = self.nodes.find().sort([("_id",1)])
+        nodes = self.nodes.find(query).sort([("_id",1)])
         for i in nodes:
             return i
 
@@ -236,7 +256,7 @@ class Db():
             
     def fetch_inbox_messages(self, node_id , from_seq=-1, to_seq = -1,  last_message_seen_time=None):   
         if(to_seq==-1):
-            to_seq = self.get_seq(node_id)
+            to_seq = self.get_seq(node_id, update=False)
         if(from_seq==-1):
             from_seq = max(0 , to_seq - 50)-1
             
@@ -244,7 +264,10 @@ class Db():
         flag = False
         more  = False
         for i in range(to_seq, from_seq, -1):
-            for j in self.pending_messages.find({"node_id_seq": node_id+"__"+str(i) , "timestamp": {"$gt":last_message_seen_time}}).sort([("timestamp", pymongo.DESCENDING)]):
+            pending_messages = self.pending_messages.find({"node_id_seq": node_id+"__"+str(i) , "timestamp": {"$gt":last_message_seen_time}}).sort([("timestamp", pymongo.DESCENDING)])
+            flag = True
+            for j in pending_messages:
+                flag = False
                 ret.append(j)
                 if(len(ret)>50):
                     flag = True
@@ -252,12 +275,12 @@ class Db():
                     break
             if(flag):
                 break
-        return map(lambda x: x["message_json"] ,  ret), from_seq, to_seq, more
+        return map(lambda x: x["message_json"] ,  ret), i, to_seq, more
                     
             
 
 
-    def get_seq(self, node_id):
+    def get_seq(self, node_id, update=True):
         
         user_seq = self.user_seq_cache.get(node_id)
         if(not user_seq):
@@ -268,7 +291,7 @@ class Db():
         if(user_seq):
             ret = user_seq["seq"]
             current_timestamp = time.time()*1000
-            if(current_timestamp - user_seq["timestamp"] >30*60*1000):
+            if(update and current_timestamp - user_seq["timestamp"] >30*60*1000):
                 ret+=1
                 user_seq["timestamp"] = current_timestamp
                 user_seq["seq"]+=1

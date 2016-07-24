@@ -281,8 +281,13 @@ def mongo_db_test_1():
     from database_mongo import Db
     import time
     db = Db()
-    db.init()
+    db.init(user_name="abhinav", password="$samosa$", host="104.199.129.250", namespace="samosa_messaging_v2")
+    
+#     print db.fetch_inbox_messages("df44c88cdaa36e4de1c5bf9c36968078", -1, -1, 1468524512476)
+#
+    db.update_node_info("g3cK4ljIyh1468240301", num_connections=1650, num_max_connections=1500)
     print db.get_a_connection_node()
+    
 
 if __name__ == "__main__":
     #load_test_single_server()

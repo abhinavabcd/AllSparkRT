@@ -1,4 +1,5 @@
-InstaKnow server:-   Scalable realtime messaging reouter , where every message has a src and dest id's set and this server reads messages and routes them appropriately to relevant connections. 
+Allspark Messaging server:-   Scalable multinode realtime messaging router in and under 1000 lines of code, where every message has a src and dest id's set and this server reads messages and routes them appropriately to relevant connections. 
+
 
 #Core concepts:
 1.  Node: Every server , device on the network  is a node , which must have an unique node id.

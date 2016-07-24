@@ -26,6 +26,8 @@ import collections
 from ws_server import WebSocketServerHandler
 from socket import errno
 import socket
+import struct
+import logging
 monkey.patch_all()
 import util_funcs
 import sys
@@ -45,7 +47,7 @@ from gevent.lock import BoundedSemaphore
 
 CONNECT_PATH = "/connectV2"
 
-from logger import logger
+from logger import logger, console_log_handler
 import urlparse
 from collections import OrderedDict
 
@@ -157,7 +159,7 @@ class Message():
         for key in kwargs:
             setattr(self, key, kwargs[key])
         if(not self.timestamp):
-            self.timestamp = int(time.time())
+            self.timestamp = int(time.time()*1000)
             
     def to_son(self):
         ret = self.__dict__
@@ -200,9 +202,9 @@ class Node():
     
     def refresh_stats(self):
         while(True):
-            db.update_node_info(self.node_id, num_connections = len(self.connections), num_msg_transfered=self._msg_recieved_counter)
+            db.update_node_info(self.node_id, num_connections = len(self.connections_ws), num_msg_transfered=self._msg_recieved_counter)
             self._msg_recieved_counter  = 0
-            gevent.sleep(5*60)#10 minutes
+            gevent.sleep(3*60)#5 minutes
             
             
             
@@ -258,7 +260,7 @@ class Node():
     
     def send_ping(self, conn):
         if(conn):
-            ping_json = json_util.dumps(Message(src_id=self.node_id).to_son())
+            ping_json = '{"src_id":"'+self.node_id+'"}'
             conn.send(ping_json)
     
     
@@ -304,6 +306,13 @@ class Node():
         if(msg_obj):
             msg = msg_obj
         else:
+            if(len(msg)>1*1000*1000):#1M bytes
+                if(ws):
+                    self.destroy_connection(ws)
+                    from_conn = self.connections_ws[ws]
+                    print from_conn.to_node_id
+                print "##uploaded greater than 10kb , "
+                return 
             msg = Message(**json_util.loads(msg))
         
         from_conn = None
@@ -366,6 +375,9 @@ class Node():
                 msg.dest_id = dest_id
                 if(not conn): 
                     logger.debug("Could not send, putting into db, and notifying user about new messages")
+                    if(msg.type==-102 or msg.type==0 or msg.type==None):
+                        break# no need to insert into db , pings and config messages
+                        
                     db.add_pending_messages(msg.dest_id, msg.type, json_util.dumps(msg.to_son()), current_timestamp)
                     self.send_a_ting(dest_id, msg)
                     #send a push notification to open and fetch any pending messages
@@ -484,8 +496,8 @@ class Node():
         
         while(resend_last_msgs and len(conn.msg_assumed_sent)>0):
             timestamp , ref , data = conn.msg_assumed_sent.popleft()
-            if(ref):
-                self.on_message(None, data, msg_obj=ref if (type(ref) is Message) else None)
+            if(ref and (type(ref) is Message) and not (ref.type==-102 or ref.type==0 or ref.type==None)):
+                self.on_message(None, data, msg_obj=ref)
         
         
         logger.debug(current_node.node_id+": destroying "+ conn.connection_id+ " with node "+ conn.to_node_id)
@@ -498,6 +510,28 @@ class Node():
 ######websocket handling
 
 #new greenlet
+
+
+
+
+
+def set_socket_options(sock):
+
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+    l_onoff = 1                                                                                                                                                           
+    l_linger = 10 # seconds,                                                                                                                                                     
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,                                                                                                                     
+                 struct.pack('ii', l_onoff, l_linger))# close means a close understand ? 
+    
+
+    TCP_USER_TIMEOUT = 18
+    max_unacknowledged_timeout = 10*1000 #ms                                                                                                                                           
+    sock.setsockopt(socket.SOL_TCP, TCP_USER_TIMEOUT, max_unacknowledged_timeout)# close means a close understand ? 
+
+
+
+
 def websocket_handler(sock, query_params=None, headers= None):
     
     auth_key = query_params.get("auth_key",None)
@@ -507,6 +541,10 @@ def websocket_handler(sock, query_params=None, headers= None):
     
     auth_key = auth_key[0]
     from_node_id , connection_id  = Node.get_connection_info(auth_key)
+    if(not from_node_id):
+        sock.close()
+        return
+            
     node_obj = db.get_node_by_id(from_node_id, strict_check=False)
     node_obj["last_push_sent"] = EPOCH_DATETIME
     from_node = util_funcs.from_kwargs(Node, **node_obj)
@@ -532,13 +570,14 @@ def websocket_handler(sock, query_params=None, headers= None):
                     ws.send(json_util.dumps(node))
                     ws.close()
             else:
-                write_data(sock, "HTTP/1.0 200 OK\r\n\r\n")
+                write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
                 write_data(sock, json_util.dumps(node))
                 sock.close()
                         
     else:
 #           self.ws.stream.handler.socket.settimeout(5)
-        
+        set_socket_options(sock)
+
         ws = WebSocketServerHandler(sock, headers)#sends handshake automatically 
         ws.handleClose = lambda ex: current_node.destroy_connection(ws, resend_last_msgs=(type(ex)==socket.error and (ex.errno == errno.ETIMEDOUT or ex.errno==errno.ECONNRESET)))
         ws.handleConnected = lambda : current_node.on_new_connection(ws, from_node, connection_id)
@@ -650,8 +689,15 @@ def start_transport_server(handlers=[]):
     parser.add_argument('--proxy_80_port',
                        help='proxy server to connect to this server')
     
+    parser.add_argument('--log_level',
+                       help='log level , debug or error or info')
+    
 
     args = parser.parse_args()
+    
+    if(args.log_level=='debug'):
+        logger.setLevel(logging.DEBUG)
+        console_log_handler.setLevel(logging.DEBUG)
     
     if(not args.port or not  args.host_address):
         logger.debug("port and host name needed")
@@ -662,10 +708,12 @@ def start_transport_server(handlers=[]):
         logger.error("Node config exists in db")
         return
     
+    
+    
     node_id = node_id or db.create_node(None, args.host_address, None, args.port)
     
     
-    db.update_node_info(node_id, proxy_80_port= args.proxy_80_port , num_connections=0, num_max_connections=7000)
+    db.update_node_info(node_id, proxy_80_port= args.proxy_80_port , num_connections=0, num_max_connections=1500)
     
     current_node = util_funcs.from_kwargs(Node, **db.get_node_by_id(node_id))
     
