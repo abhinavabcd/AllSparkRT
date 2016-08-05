@@ -45,9 +45,21 @@ from gevent.lock import BoundedSemaphore
 
 
 
+##message types
+CLIENT_CONFIG_REQUEST = -101
+CLIENT_CONFIG_RESPONSE = -102
+
+NEW_NODE_JOINED_SESSION = 100
+NODE_UNJOINED_SESSION = 103
+
+### 
+
+
+
+
 CONNECT_PATH = "/connectV2"
 
-from logger import logger, console_log_handler
+from logger import logger, log_handler , init_timed_rotating_log
 import urlparse
 from collections import OrderedDict
 
@@ -110,7 +122,7 @@ class Connection(WebSocket):
         self.lock.acquire()
         data_ref = None
         data = None
-        try:            
+        try:
             while(not self.is_stale and len(self.queue)>0):
                 data_ref, data = self.queue.popleft() #peek
                 self.ws.send(data) # msg objects only
@@ -118,21 +130,22 @@ class Connection(WebSocket):
                 self.last_msg_sent_timestamp = current_timestamp
                 
                 while(len(self.msg_assumed_sent)>0 and self.msg_assumed_sent[0][0]<current_timestamp-max_assumed_sent_buffer_time):
+                    #keep inly 100 seconds of previous data
                     self.msg_assumed_sent.popleft()
                 
                 self.msg_assumed_sent.append((current_timestamp , data_ref, data))
                 
-                logger.debug("message sent to "+self.to_node_id)
+#                logger.debug("message sent to "+self.to_node_id)
             
         except  Exception as ex:
-            logger.debug("Error occured while sending, closing connection")            
-            if(not self.is_stale):
-                self.is_stale = True
-            current_node.destroy_connection(self.ws)
+            err_msg  = "Exception while sending message to %s , might be closed "%self.to_node_id
+            logger.debug(err_msg)
+            self.is_stale = True
+            raise Exception(err_msg)
             
         finally:
             self.lock.release()
-        return not self.is_stale
+        return 
             
         
 class Message():
@@ -185,16 +198,25 @@ class Node():
     connections_ws = {} # ws - > connection_obj
     
     
+    _delta_connections = 0
+    _update_on_num_connections_change = 100
+    
     def send_heartbeat(self):
         ping_json = json_util.dumps({"src_id":self.node_id})
         while(True):
             last_ping_sent = datetime.now()
             for node_id in self.connections.keys():
-                for conn in self.connections.get(node_id , []):
+                to_destroy = []
+                node_connections = self.connections.get(node_id , [])
+                for conn in node_connections:
                     try:
                         conn.send(ping_json)
                     except:
-                        pass
+                        to_destroy.append(conn)
+                
+                for conn in to_destroy:
+                    self.destroy_connection(conn.ws, conn_obj=conn)
+                            
             time_elapsed = (datetime.now() - last_ping_sent).total_seconds()
             logger.debug("sent a heartbeat")
             gevent.sleep(max(0 , 10*60 - (time_elapsed))) # 10 minutes send a heart beat
@@ -202,12 +224,14 @@ class Node():
     
     def refresh_stats(self):
         while(True):
-            db.update_node_info(self.node_id, num_connections = len(self.connections_ws), num_msg_transfered=self._msg_recieved_counter)
-            self._msg_recieved_counter  = 0
-            gevent.sleep(3*60)#5 minutes
-            
-            
-            
+            self.update_node_info()
+            gevent.sleep(config.UPDATE_STATS_INTERVAL)#every 5 minutes
+    
+    def update_node_info(self):
+        logger.debug("Updating node stats num_connections : %d "%len(self.connections_ws))
+        db.update_node_info(self.node_id, num_connections = len(self.connections_ws), num_msg_transfered=self._msg_recieved_counter)
+        self._msg_recieved_counter  = 0
+        
     @classmethod
     def get_connection_info(cls, auth_key=None):
         data = cookies.decode_signed_value(config.SERVER_SECRET, config.SERVER_AUTH_KEY_STRING, urllib.unquote(auth_key))
@@ -248,7 +272,13 @@ class Node():
             
             c = 3
             while(c>0):
-                try:                          
+                try:   
+                    node = db.get_node_by_id(node_id)
+                    if(node.get("cluster_id", None)!=self.cluster_id):
+                        #check if there is an existing connection to that cluster
+                        pass
+                        
+                                          
                     conn =  self.make_new_connection(node_id)
                     return conn
                 except Exception as e:
@@ -256,13 +286,6 @@ class Node():
                     pass
                 c-=1
             return None
-    
-    
-    def send_ping(self, conn):
-        if(conn):
-            ping_json = '{"src_id":"'+self.node_id+'"}'
-            conn.send(ping_json)
-    
     
     #called by the underlying websockets
     def on_new_connection(self, ws, from_node, connection_id):
@@ -279,7 +302,9 @@ class Node():
         conn.connection_id = connection_id
         
         logger.debug("New connection from "+ from_node_id+ " connection_id :: "+connection_id)
-
+        
+        self.connections_delta_changed(1)
+        
         if(connection_id):
             temp = self.connections.get(from_node_id, None)
             if(not temp):
@@ -287,15 +312,27 @@ class Node():
                 self.connections[from_node_id] = temp
             temp.append(conn)
             self.connections_ws[ws] = conn
-            for prev_conn in temp:
+            
+            ping_json = '{"src_id":"'+self.node_id+'"}'
+            for prev_conn in temp:#send ping to see if any previous connections are alive
                 if(conn!=prev_conn):
-                    self.send_ping(prev_conn)
+                    try:
+                        prev_conn.send(ping_json)
+                    except:
+                        self.destroy_connection(prev_conn.ws, conn_obj=prev_conn)
                     
             return conn
         else:
             ws.close()
             return None
-        
+    
+    def connections_delta_changed(self, num):
+        self._delta_connections+=num
+        if(self._delta_connections>self._update_on_num_connections_change):
+            self._delta_connections = 0
+            gevent.spawn(self.update_node_info)
+
+    
     #use this to forward to a multiple client nodes or , a direct node , kjust like normal communication
     def on_message(self, ws, msg, msg_obj = None): # msg is string , msg_obj is Message object
         
@@ -308,10 +345,10 @@ class Node():
         else:
             if(len(msg)>1*1000*1000):#1M bytes
                 if(ws):
-                    self.destroy_connection(ws)
                     from_conn = self.connections_ws[ws]
                     print from_conn.to_node_id
-                print "##uploaded greater than 10kb , "
+                    self.destroy_connection(ws)
+                print "##uploaded greater than 1 MB "
                 return 
             msg = Message(**json_util.loads(msg))
         
@@ -320,14 +357,11 @@ class Node():
         if(ws):#if no websocket, internal transfer only
             from_conn = self.connections_ws[ws]
             from_conn.last_msg_recv_timestamp = current_timestamp
-            self._msg_recieved_counter+=1
             if(from_conn.is_external_node):# set the src if only if from external_nodefor delivery reports
                 msg.src_id = from_conn.to_node_id
                 msg.src_client_id = from_conn.client_id
                 msg.timestamp = int(current_timestamp) # millis
    
-        if(msg.src_id):
-            logger.debug("message recieved from "+msg.src_id)
         
         dest_ids = []
         if(msg.dest_id):# single node
@@ -337,10 +371,10 @@ class Node():
             dest_ids = db.get_node_ids_by_client_id(msg.dest_client_id)
                 
         elif(msg.dest_session_id):
-            dest_id = db.get_node_ids_for_session(msg.session_id)
+            dest_ids = db.get_node_ids_for_session(msg.session_id)
             
         else:# should have atleast one destination set
-            if(msg.type==-101):
+            if(msg.type==CLIENT_CONFIG_REQUEST):
                 #config message
                 #update gcm key from client
                 logger.debug("recieved config message from: "+from_conn.to_node_id)
@@ -362,8 +396,33 @@ class Node():
                     
                     messages, from_seq , to_seq, has_more = db.fetch_inbox_messages(msg.src_id, fetch_inbox_messages_from_seq, fetch_inbox_messages_to_seq, fetch_inbox_messages_from_timestamp)
                     payload = json_util.dumps({"messages":messages, "from_seq":from_seq, "to_seq":to_seq, "more":has_more, "server_timestamp_add_diff":int(current_timestamp-user_time_stamp)})
-                    from_conn.send(json_util.dumps(Message(type=-102, payload=payload, dest_id=from_conn.to_node_id).to_son()))
+                    try:
+                        from_conn.send(json_util.dumps(Message(type=CLIENT_CONFIG_RESPONSE, payload=payload, dest_id=from_conn.to_node_id).to_son()))
+                    except:
+                        self.destroy_connection(from_conn.ws, conn_obj=from_conn)
             return
+        
+        if(msg.type == NEW_NODE_JOINED_SESSION):
+            #update in our cache too
+            # this message is sent as a broadcast to all users of a session
+            update_in_db = False
+            if(from_conn and from_conn.is_external_node):
+                update_in_db  = True#this is the primary node the new node_id is connected to and requested to join the session
+            db.join_session(msg.dest_session_id, msg.src_id, update_in_db = update_in_db)
+            
+            
+        if(msg.type == NODE_UNJOINED_SESSION):
+            update_in_db = False
+            if(from_conn and from_conn.is_external_node):
+                update_in_db  = True#this is the primary node the new node_id is connected to and requested to unjoin the session
+            db.unjoin_session(msg.dest_session_id, msg.src_id, update_in_db = update_in_db)
+            
+            
+        if(dest_ids):
+            self._msg_recieved_counter+=1
+            if(msg.src_id):
+                logger.debug("message recieved from "+msg.src_id)            
+            
         
 #         if(db.is_valid_node_fwd(msg.src_id, msg.dest_id)):
         
@@ -385,12 +444,10 @@ class Node():
                 try:
                     if(current_timestamp - conn.last_msg_recv_timestamp > 30*60*1000):#20 minutes no ping
                         raise Exception("Not ping recieved , stale connection")#probably a stale connection 
-                    
                     conn.send(json_util.dumps(msg.to_son()) , ref=msg) # this could raise 
-                    break# successfully forwarded
+                    break# successfully forwarded to node
                 except Exception as e:
                     #keep it in db to send it later
-                    logger.error(sys.exc_info())
                     self.destroy_connection(conn.ws, conn_obj=conn)
                     logger.debug("An exception occured while sending, retrying with another connection")
                     
@@ -454,7 +511,7 @@ class Node():
             except:
                 cb_close(self, ws)
         
-
+        
         to_node = util_funcs.from_kwargs(Node, **db.get_node_by_id(to_node_id))
         connection_id = db.add_connection(current_node.node_id, to_node_id)
         try:
@@ -474,18 +531,18 @@ class Node():
     def destroy_connection(self, ws, conn_obj=None, resend_last_msgs=False):
 #         for line in traceback.format_stack():
 #             print(line.strip())
-        conn = self.connections_ws.get(ws,None)
-        if(conn):
-            del self.connections_ws[ws]
-        else:
+        conn = self.connections_ws.pop(ws,None)
+        if(not conn):
             if(not conn_obj):# no connection object passed
                 return
             conn = conn_obj
         
-        current_node.connections.get(conn.to_node_id).remove(conn)
         db.remove_connection(conn.connection_id)
-        
-        
+        try:
+            self.connections.get(conn.to_node_id).remove(conn)
+        except:
+            logger.debug("strange error , connection not in node connections list")
+        self.connections_delta_changed(-1)
         
         # retransmit messages onto other connections for this node
         while(len(conn.queue)>0):
@@ -527,7 +584,7 @@ def set_socket_options(sock):
 
     TCP_USER_TIMEOUT = 18
     max_unacknowledged_timeout = 10*1000 #ms                                                                                                                                           
-    sock.setsockopt(socket.SOL_TCP, TCP_USER_TIMEOUT, max_unacknowledged_timeout)# close means a close understand ? 
+#    sock.setsockopt(socket.SOL_TCP, TCP_USER_TIMEOUT, max_unacknowledged_timeout)# close means a close understand ? 
 
 
 
@@ -672,8 +729,8 @@ def handle_connection(socket, address):
 def start_transport_server(handlers=[]):
     global current_node
     global request_handlers
-    db.init()        
-    
+    db.init(user_name="", password="", host="localhost", namespace="instaknow")
+        
     import argparse
 
     parser = argparse.ArgumentParser(description='process arguments')
@@ -697,7 +754,8 @@ def start_transport_server(handlers=[]):
     
     if(args.log_level=='debug'):
         logger.setLevel(logging.DEBUG)
-        console_log_handler.setLevel(logging.DEBUG)
+        log_handler.setLevel(logging.DEBUG)
+        #init_timed_rotating_log("logs/logs_"+args.port+".log",  logging.DEBUG)
     
     if(not args.port or not  args.host_address):
         logger.debug("port and host name needed")
@@ -713,7 +771,7 @@ def start_transport_server(handlers=[]):
     node_id = node_id or db.create_node(None, args.host_address, None, args.port)
     
     
-    db.update_node_info(node_id, proxy_80_port= args.proxy_80_port , num_connections=0, num_max_connections=1500)
+    db.update_node_info(node_id, proxy_80_port= args.proxy_80_port , num_connections=0, num_max_connections=1400)
     
     current_node = util_funcs.from_kwargs(Node, **db.get_node_by_id(node_id))
     

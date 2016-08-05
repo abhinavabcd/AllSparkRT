@@ -33,7 +33,7 @@ class Db():
     
     node_cache = LRUCache(10000)
     user_seq_cache = LRUCache(10000)
-    session_nod_ids_cache = LRUCache(100000)
+    session_node_ids_cache = LRUCache(100000)
     
     
     def init(self, user_name="", password="", host="127.0.0.1", namespace=""):
@@ -187,9 +187,15 @@ class Db():
         
     
     def get_node_ids_for_session(self, session_id):
-        ret = []
+        
+        node_ids = self.session_node_ids_cache.get(session_id)
+        if(node_ids):
+            return node_ids
+        ret = set()
         for i in self.session_nodes.find({"session_id":session_id}):
-            ret.append(i["node_id"])
+            ret.add(i["node_id"])
+            
+        self.session_node_ids_cache.put(session_id, ret)
         return ret
 
     def create_node(self, client_id , addr , addr_internal, port, is_server=False):
@@ -236,10 +242,30 @@ class Db():
         return session_id
     
     
-    def join_session(self, session_id , node_id):
-        result = self.session_nodes.insert_one({"session_id":session_id, "node_id":node_id})
-        return result.inserted_id!=None
+    def join_session(self, session_id , node_id, update_in_db=True):
+        
+        is_inserted = True
+        if(update_in_db):
+            result = self.session_nodes.insert_one({"session_id":session_id, "node_id":node_id})
+            is_inserted = result.inserted_id!=None
+        
+        node_ids = self.session_node_ids_cache.get(session_id)
+        if(node_ids):
+            node_ids.add(node_id)
+                    
+        return is_inserted
     
+    
+    def unjoin_session(self, session_id, node_id , update_in_db=True):
+        if(update_in_db):
+            result = self.session_nodes.delete({"session_id":session_id, "node_id":node_id})
+        
+        node_ids = self.session_node_ids_cache.get(session_id)
+        if(node_ids):
+            node_ids.remove(node_id)
+        
+        return
+        
     
     def remove_client_nodes(self, client_id):
         result = self.nodes.delete_many({"client_id":client_id})

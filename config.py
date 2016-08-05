@@ -10,11 +10,13 @@ APPLICATION_NAME = "InstaKnow"
 SERVER_SECRET = "XXXXXXXXX"
 SERVER_AUTH_KEY_STRING = "user_key"
 
-DB_NAME = "instaknow"
+DB_NAME = "samosa_messaging"
 
-GCM_API_KEY = "_______GCM_API_KEY_FOR_ANDROID_PING_INCASE_THE_DEVICE_IS_NOT_CONNECTED____" # This is only a fallback we already have a pretty solid functinal realtime  code here.
+GCM_API_KEY = "XXXXXXXXXX" ## YOUR GCM API KEY HERE
 
 
 EPOCH_DATETIME = datetime.datetime(1970,1,1)
 
 DBTABLE_PREFIX = ""
+
+UPDATE_STATS_INTERVAL = 5*60

@@ -11,17 +11,19 @@ Allspark Messaging server:-   Scalable multinode realtime messaging router in an
 #The story:
 We have a graph of nodes/connections.
 
-- There are nodes everywhere that are connected to each other. Each node must have an unique id. Client has multiple nodes.
-- You can send messages to a single node or in general send to a client which inturn will send to all the connected client nodes. Or send it to a session , that will inturn send it to all nodes in that session.
+- There are nodes everywhere that are connected to each other. Each node must have an unique id. In traditional sense, every device of a user has a unique node_id.
+- You can send messages to a single node or in general send to a user(client) which inturn will send that to all the connected nodes of the user. Or send it to a session , that will inturn send it to all nodes in that session.
 
 In the connection graph , with unique node_ids , we register each edge with a unique connection_id.
 Between two nodes there could be multiple connections.
 
-Each send message should have a dest_id , dest_client_id or dest_session_id set , this is mandatory to forward message. otherwise it is considerd as a config message/ping.
+Each sent message should have a dest_id , dest_client_id or dest_session_id set , this is mandatory to forward message. otherwise it is considerd as a config message/ping.
 
 
 #Process:
 1) The client makes a call to get preconnection info first which should return the node information to connect to.
+#TODO: return a authentication_token in preconnection and that has to be sent to the user to verify connection came through preconnection or not.
+
 2) After the client 'node1' makes a connection to server 'node2', on the node2, we will register a connection in db  (node1 , node2 ,connection_id ) each connection has a unique id( like addressing an edge ).
 3) Each connection(between two nodes) on a server has a send queue, when you want to send , the message is put into the queue.
 4) When the node you want to forward doesn't have a direct connection, we can either 
@@ -40,3 +42,12 @@ Each send message should have a dest_id , dest_client_id or dest_session_id set 
 #websockets backed by gevent.
 
 #performance testing/benchmarking not yet done, contributors appreciated.
+
+Example:
+
+nohup python server.py --host_address=104.155.228.18 --port=8080 --proxy_80_port=server1-8080.appsandlabs.com --force=True --log_level=debug > nohup-8080.out 2>&1 &
+
+nohup python server.py --host_address=104.155.228.18 --port=8081 --proxy_80_port=server1-8081.appsandlabs.com --force=True --log_level=debug > nohup-8081.out 2>&1 &
+
+nohup python server.py --host_address=104.155.228.18 --port=8082 --proxy_80_port=server1-8082.appsandlabs.com --force=True --log_level=debug  > nohup-8082.out 2>&1 &
+
