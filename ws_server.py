@@ -88,8 +88,8 @@ class WebSocketServerHandler(object):
             try:
                self._handleData()
             except (socket.error, Exception) as ex:
-               self.client.close()
                self.handleClose(ex)
+               self.client.close()
                break
 
    def handleMessage(self):
@@ -107,7 +107,7 @@ class WebSocketServerHandler(object):
       """
       pass
 
-   def handleClose(self):
+   def handleClose(self , ex):
       """
           Called when a websocket server gets a Close frame from a client.
       """
