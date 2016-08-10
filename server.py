@@ -132,6 +132,7 @@ class Connection(WebSocket):
                 
                 while(len(self.msg_assumed_sent)>0 and self.msg_assumed_sent[0][0]<current_timestamp-max_assumed_sent_buffer_time):
                     #keep inly 100 seconds of previous data
+                    logger.debug("popping buffer older than keeping time %s"%self.to_node_id)
                     self.msg_assumed_sent.popleft()
                 
                 self.msg_assumed_sent.append((current_timestamp , data_ref, data))
@@ -249,6 +250,22 @@ class Node():
             return data, None
         
     @classmethod
+    def create_connection_validation_key(cls, node_id):
+        return cookies.create_signed_value(config.SERVER_SECRET, config.SERVER_AUTH_KEY_STRING  , json_util.dumps({"node_id":node_id, "timestamp":int(time.time())}))
+        
+    @classmethod
+    def is_connection_valid(cls, node_id , connection_validation_key):
+        data = cookies.decode_signed_value(config.SERVER_SECRET, config.SERVER_AUTH_KEY_STRING, urllib.unquote(connection_validation_key))
+        try:
+            data = json_util.loads(data)
+            return node_id == data.get("node_id",None) and  (time.time() - data.get("timestamp",0) < 120)# created in the last two minute
+        except:
+            return False
+        
+    
+    
+        
+    @classmethod
     def get_connection_auth_key(cls, node_id, connection_id):
         return cookies.create_signed_value(config.SERVER_SECRET, config.SERVER_AUTH_KEY_STRING  , json_util.dumps({"node_id":node_id, "connection_id":connection_id}))
     
@@ -325,8 +342,8 @@ class Node():
                 if(conn!=prev_conn):
                     try:
                         prev_conn.send(ping_json)
-                    except:
-                        self.destroy_connection(prev_conn.ws, conn_obj=prev_conn)
+                    except Exception as ex:
+                        self.destroy_connection(prev_conn.ws, conn_obj=prev_conn , on_exception=ex)
                     
             return conn
         else:
@@ -405,8 +422,8 @@ class Node():
                     payload = json_util.dumps({"messages":messages, "from_seq":from_seq, "to_seq":to_seq, "more":has_more, "server_timestamp_add_diff":int(current_timestamp-user_time_stamp)})
                     try:
                         from_conn.send(json_util.dumps(Message(type=CLIENT_CONFIG_RESPONSE, payload=payload, dest_id=from_conn.to_node_id).to_son()))
-                    except:
-                        self.destroy_connection(from_conn.ws, conn_obj=from_conn)
+                    except Exception as ex:
+                        self.destroy_connection(from_conn.ws, conn_obj=from_conn , on_exception=ex)
             return
         
         if(msg.type == NEW_NODE_JOINED_SESSION):
@@ -444,27 +461,27 @@ class Node():
                     if(msg.type==-102 or msg.type==0 or msg.type==None or msg.type==USER_OFFLINE_RESPONSE):
                         break# no need to insert into db , pings and config messages
                     
-                    if(not from_conn):
-                        from_conn = self.get_connection(msg.src_id)
-                    
-                    if(from_conn):
-                        try:
-                            from_conn.send(json_util.dumps(Message(type=USER_OFFLINE_RESPONSE, src_id=msg.dest_id).to_son()))
-                        except:
-                            logger.debug("wtf!!! connection closed !! %s"%msg.src_id)
+#                     if(not from_conn):
+#                         from_conn = self.get_connection(msg.src_id)
+#                     
+#                     if(from_conn):
+#                         try:
+#                             from_conn.send(json_util.dumps(Message(type=USER_OFFLINE_RESPONSE, src_id=msg.dest_id).to_son()))
+#                         except:
+#                             logger.debug("wtf!!! connection closed !! %s"%msg.src_id)
                     db.add_pending_messages(msg.dest_id, msg.type, json_util.dumps(msg.to_son()), current_timestamp)
                     self.send_a_ting(dest_id, msg)
                     #send a push notification to open and fetch any pending messages
                     break # cannot find any connection
                 try:
                     if(current_timestamp - conn.last_msg_recv_timestamp > 30*60*1000):#20 minutes no ping
-                        raise Exception("Not ping recieved , stale connection")#probably a stale connection 
-                    conn.send(json_util.dumps(msg.to_son()) , ref=msg) # this could raise 
+                        raise Exception("Not ping recieved , stale connection to %s"%conn.to_node_id)#probably a stale connection 
+                    conn.send(json_util.dumps(msg.to_son()) , ref=msg)# this could raise 
                     break# successfully forwarded to node
-                except Exception as e:
+                except Exception as ex:
                     #keep it in db to send it later
-                    self.destroy_connection(conn.ws, conn_obj=conn)
-                    logger.debug("An exception occured while sending, retrying with another connection")
+                    self.destroy_connection(conn.ws, conn_obj=conn , on_exception=ex)
+                    logger.debug("An exception occured while sending to %s , retrying with another connection"%conn.to_node_id)
                     
           
     
@@ -573,14 +590,16 @@ class Node():
             #these are all assumsed sent , so , insert them into db as pending messages
             logger.debug("Could not send, retrying with another connections")
             ref , data = conn.queue.popleft()
-            self.on_message(None, data, msg_obj= (ref if (type(ref) is Message) else None))
+            self.on_message(None, data, msg_obj= (ref if isinstance(ref , Message) else None))
         
         while(resend_last_msgs and len(conn.msg_assumed_sent)>0):
             timestamp , ref , data = conn.msg_assumed_sent.popleft()
-            if(ref and (type(ref) is Message) and not (ref.type==-102 or ref.type==0 or ref.type==None or ref.type==USER_OFFLINE_RESPONSE)):
-                logger.debug("resending from the last buffer")
-                self.on_message(None, data, msg_obj=ref)
-        
+            if(ref and isinstance(ref , Message)):
+                if not (ref.type==-102 or ref.type==0 or ref.type==None or ref.type==USER_OFFLINE_RESPONSE):
+                    logger.debug("resending from the last buffer")
+                    self.on_message(None, data, msg_obj=ref)
+                else:
+                    logger.debug("not resending from buffer : " +str(timestamp))
         
         logger.debug(current_node.node_id+": destroying "+ conn.connection_id+ " with node "+ conn.to_node_id)
         try:
@@ -600,6 +619,7 @@ class Node():
 def set_socket_options(sock):
 
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+#    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, 0)
 
     l_onoff = 1                                                                                                                                                           
     l_linger = 10 # seconds,                                                                                                                                                     
@@ -609,12 +629,16 @@ def set_socket_options(sock):
 
     TCP_USER_TIMEOUT = 18
     max_unacknowledged_timeout = 10*1000 #ms                                                                                                                                           
-#    sock.setsockopt(socket.SOL_TCP, TCP_USER_TIMEOUT, max_unacknowledged_timeout)# close means a close understand ? 
+    sock.setsockopt(socket.SOL_TCP, TCP_USER_TIMEOUT, max_unacknowledged_timeout)# close means a close understand ? 
 
 
 
 
-def websocket_handler(sock, query_params=None, headers= None):
+def websocket_handler_v2(sock, query_params=None, headers= None):
+    websocket_handler_v3(sock ,query_params=query_params, headers= headers, connection_validation=False)
+    
+
+def websocket_handler_v3(sock, query_params=None, headers= None, connection_validation=True):
     
     auth_key = query_params.get("auth_key",None)
     if(not auth_key):#need auth_key for sure
@@ -645,18 +669,27 @@ def websocket_handler(sock, query_params=None, headers= None):
         # based on client_id , session_id , send a node details to connect to
         if(session_id or client_id or True):
             node = db.get_a_connection_node(need_80_port=need_80_port)
+            if(connection_validation):
+                node["validation_key"] = current_node.create_connection_validation_key(node.get("node_id"))
             #TODO: logically decide a node use has to connect to
             if(headers.get("Sec-WebSocket-Key", None)):#through websocket
                     ws = WebSocketServerHandler(sock, headers)#sends handshake automatically 
                     ws.do_handshake(headers)
                     ws.send(json_util.dumps(node))
                     ws.close()
-            else:
+            else:#through http
                 write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
                 write_data(sock, json_util.dumps(node))
                 sock.close()
                         
     else:
+        
+        if(connection_validation):
+            validation_key  = query_params.get("validation_key",None)
+            if(not validation_key or not current_node.is_connection_valid(current_node.node_id , validation_key[0])):
+                sock.close()
+                return
+        
 #           self.ws.stream.handler.socket.settimeout(5)
         set_socket_options(sock)
 
@@ -774,6 +807,9 @@ def start_transport_server(handlers=[]):
     parser.add_argument('--log_level',
                        help='log level , debug or error or info')
     
+    parser.add_argument('--num_max_connections',type=int, 
+                       help='Maximum connections to accept' , default=1400)
+    
 
     args = parser.parse_args()
     
@@ -794,7 +830,7 @@ def start_transport_server(handlers=[]):
     
     node_id = node_id or db.create_node(None, args.host_address, None, args.port)
 
-    db.update_node_info(node_id, proxy_80_port= args.proxy_80_port , num_connections=0, num_max_connections=1400)
+    db.update_node_info(node_id, proxy_80_port= args.proxy_80_port , num_connections=0, num_max_connections=args.num_max_connections)
     
     current_node = util_funcs.from_kwargs(Node, **db.get_node_by_id(node_id))
     
@@ -823,5 +859,5 @@ def start_transport_server(handlers=[]):
     server.serve_forever()    
 
 if __name__ =="__main__":
-    start_transport_server([('^/connectV2', websocket_handler)])
+    start_transport_server([('^/connectV2', websocket_handler_v2), ('^/connectV3', websocket_handler_v3)])
     
