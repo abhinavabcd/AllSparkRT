@@ -1,14 +1,15 @@
 Allspark Realtime server:-   Scalable multinode realtime messaging router. Chatting/ realtime messaging / gaming server. 
 Simple and powerful just keep starting nodes to scale.
 
-#Core concepts:
-1.  Node: Every server , device on the network  is a node , which must have an unique node id.
-2.  Connection:  represents from_node_id  , to_node_id , which is basically edge on the graph. Each of these edge has an id 'connection_id' and has a send queue , where the messages to be sent are put into(sending queues on both sides).
-3.  You can create connections to nodes if they have addresses.
-4:  Client: client can have multiple nodes. Just like you have a computer, mobile , etc .
-5.  Session: basically a group of nodes together are inside a session.
+##Core concepts:
+1. Node: Every server , device on the network  is a node , which must have an unique node id.
+2. Connection:  represents from_node_id  , to_node_id , which is basically edge on the graph. Each of these edge has an id 'connection_id' and has a send queue , where the messages to be sent are put into(sending queues on both sides).
+3. You can create connections to nodes if they have addresses.
+4: Client: client can have multiple nodes. Just like you have a computer, mobile , etc .
+5. Session: basically a group of nodes together are inside a session.
+6. Software loadbalanced. 
 
-#The Mechanics:
+##The Mechanics:
 We have a graph of nodes/connections.
 
 - There are nodes everywhere that are connected to each other. Each node must have an unique id. In real sense, every device of a user has a unique node_id, and so is every server.
@@ -19,29 +20,37 @@ We have a graph of nodes/connections.
 Each sent message should have a dest_id , dest_client_id or dest_session_id set , this is mandatory to forward message. otherwise it is considerd as a config message/ping.
 
 
-#Workflow:
+
+##Workflow:
 1) The client makes a call to get preconnection info first which should return the node information to connect to including a connection validation key.
 
-2) After the  'node1' makes a connection to server 'node2', on the node2, we will register a connection in db  (node1 , node2 ,connection_id ) each connection has a unique id( like addressing an edge ).
+
+2) Connect to the node address directly and include validation_key in the request as get parameters.  After the  'node1' makes a connection to server 'node2', on the node2, we will register a connection in db  (node1 , node2 ,connection_id ) each connection has a unique id( like addressing an edge ). 
 
 3) Each connection(between two nodes) on a server has a send queue, when you want to send , the message is put into the queue when you intent to send it.
-4) When the node you want to forward doesn't have a direct connection, we can either 
+
+4) When a connection breaks, we destory the corresponding databse entry. 
+
+5) When the node you want to forward doesn't have a direct connection, we can either 
 	a) open a connection to it directly if it has a direct address 
 		(OR)
 	b) We open a connection to the node that this node is connected to.
 	    (or)
-	c) Is totally offline, we send push notifications incase of android/ios and store the message in pending messages.
+	c) The node is not connected.  we send push notifications incase of android/ios, (supports gcm key for android) and 			store the message in pending messages.
 	
-5) Done.  Happy servering.
+5) Done. 
 
-#Proxy connections:
+##Proxy connections:
 For users who cannot connect to custom ports which server start , we additonally provide a proxy address for a node. Supporting nginx sample config added to project.
 
 
 
-#websockets backed by gevent.
+##websockets backed by gevent.
 
-#performance testing/benchmarking 50,000 messages 20 seconds, contributors appreciated.
+##performance testing/benchmarking:
+- Tested at 50,000 messages , 20 seconds , 1% errors on a single micro instance.
+
+-Free to Contribute.
 
 Example:
 
@@ -59,5 +68,4 @@ nohup python server.py --host_address=104.155.228.18 --port=8082 --proxy_80_port
 
 
 
-- keep starting as my nodes as needed , however the only bottle neck is the database, allmost all the  queries are LRUCached which significantly reduces the db hits. (Monitor and scale mongo as needed) 
- 
+
