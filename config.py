@@ -5,12 +5,12 @@ Created on May 25, 2016
 '''
 import datetime
 
-APPLICATION_NAME = "InstaKnow"
+APPLICATION_NAME = "MyFirstChatApplication"
 
 SERVER_SECRET = "XXXXXXXXX"
 SERVER_AUTH_KEY_STRING = "user_key"
 
-DB_NAME = "samosa_messaging"
+DB_NAME = "allspark_rt_db"
 
 GCM_API_KEY = "XXXXXXXXXX" ## YOUR GCM API KEY HERE
 
