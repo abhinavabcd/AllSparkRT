@@ -18,7 +18,10 @@ def test0():
     
     return True
 
-
+def test_decode_key():
+    import cookies
+    import config
+    print cookies.decode_signed_value(config.SERVER_SECRET, config.SERVER_AUTH_KEY_STRING, "cmVzdGF1cmFudDFfX3JlY2VwdGlvbg==|1471796646|69861d7be34901217fffff5db5ae33a61a4c95fc")
 
 
 
@@ -294,5 +297,6 @@ if __name__ == "__main__":
     #test2()
     #mongo_db_test()
     #mongo_db_test_1()
-    #test0()
-    mongo_db_test_1()
+    test0()
+    test_decode_key()
+    #mongo_db_test_1()

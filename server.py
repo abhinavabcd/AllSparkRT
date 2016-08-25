@@ -28,6 +28,7 @@ from socket import errno
 import socket
 import struct
 import logging
+from lru_cache import LRUCache
 monkey.patch_all()
 import util_funcs
 import sys
@@ -49,9 +50,11 @@ from gevent.lock import BoundedSemaphore
 CLIENT_CONFIG_REQUEST = -101
 CLIENT_CONFIG_RESPONSE = -102
 USER_OFFLINE_RESPONSE = -4
+SESSION_UNAUTHORIZED = -5
 
 NEW_NODE_JOINED_SESSION = 100
 NODE_UNJOINED_SESSION = 103
+NODE_REVEAL_ANONYMITY  = 104
 
 ### 
 
@@ -168,6 +171,8 @@ class Message():
     id = None
     is_ack_required = True
     
+    anonymize_src_id = None
+    
     timestamp = None # utc time stamp
     
     def __init__(self, **kwargs):
@@ -180,9 +185,20 @@ class Message():
         ret = self.__dict__
         for k in ret.keys():
             if(ret[k]==None):
-                del ret[k]                
+                del ret[k]            
         return ret
-
+    
+    def to_son_anonymize(self):
+        ret = {}
+        for k, v in self.__dict__.iteritems():
+            if(v):
+                ret[k] = v                
+        temp = ret.get('anonymize_src_id', None)
+        if(temp):
+            ret['src_id'] = ret.pop('anonymize_src_id')
+        
+        return ret
+    
 class Node():
     
     cluster_id = None
@@ -203,6 +219,7 @@ class Node():
     _delta_connections = 0
     _update_on_num_connections_change = 100
     
+    intermediate_hops = LRUCache(100000)
     def send_heartbeat(self):
         ping_json = json_util.dumps({"src_id":self.node_id})
         while(True):
@@ -242,12 +259,13 @@ class Node():
         
     @classmethod
     def get_connection_info(cls, auth_key=None):
-        data = cookies.decode_signed_value(config.SERVER_SECRET, config.SERVER_AUTH_KEY_STRING, urllib.unquote(auth_key))
+        data = None
         try:
+            data = cookies.decode_signed_value(config.SERVER_SECRET, config.SERVER_AUTH_KEY_STRING, urllib.unquote(auth_key))
             data = json_util.loads(data)
-            return data.get("node_id",None), data.get("connection_id",None)
+            return str(data.get("node_id",None)), data.get("connection_id",None)
         except:
-            return data, None
+            return str(data), None
         
     @classmethod
     def create_connection_validation_key(cls, node_id):
@@ -258,7 +276,7 @@ class Node():
         data = cookies.decode_signed_value(config.SERVER_SECRET, config.SERVER_AUTH_KEY_STRING, urllib.unquote(connection_validation_key))
         try:
             data = json_util.loads(data)
-            return node_id == data.get("node_id",None) and  (time.time() - data.get("timestamp",0) < 120)# created in the last two minute
+            return node_id == data.get("node_id",None) and  (time.time() - data.get("timestamp",0) < 60)# created less than a  minute
         except:
             return False
         
@@ -287,17 +305,34 @@ class Node():
                 return conn
                 
             #check for any intermediate node that it is connected to
-            intermediate_node_id = db.get_node_with_connection_to(node_id)
-            if(intermediate_node_id==None or intermediate_node_id==current_node.node_id):
-                return None
-            return self.get_connection(intermediate_node_id)
-        else:
-            # try making connection to the server
             
+            temp = self.intermediate_hops.get(node_id, None)
+            intermediate_node_id = None
+            if(temp):
+                timestamp, intermediate_node_id = temp
+                if(time.time() - timestamp > 5*60):#5 minutes
+                    intermediate_node_id = temp = None
+                    self.intermediate_hops.delete(node_id) # remove and reetch again
+                    
+                
+            if(not intermediate_node_id):
+                intermediate_node_id = db.get_node_with_connection_to(node_id)
+                if(intermediate_node_id==None or intermediate_node_id==current_node.node_id):
+                    return None
+            
+            conn = self.get_connection(intermediate_node_id)
+            if(not temp):
+                self.intermediate_hops.put(node_id ,  (time.time(), conn))
+            return conn
+        else:
+            # try making connection to the server            
             c = 3
             while(c>0):
                 try:   
                     node = db.get_node_by_id(node_id)
+                    conn = self.intermediate_hops.get(node_id, None)
+                    if(conn): return conn
+                    
                     if(node.get("cluster_id", None)!=self.cluster_id):
                         #check if there is an existing connection to that cluster
                         pass
@@ -325,7 +360,7 @@ class Node():
         connection_id = db.check_and_add_new_connection(connection_id , from_node_id , current_node.node_id)
         conn.connection_id = connection_id
         
-        logger.debug("New connection from "+ from_node_id+ " connection_id :: "+connection_id)
+        logger.debug("New connection from  %s connection_id :: %s"%(from_node_id, connection_id))
         
         self.connections_delta_changed(1)
         
@@ -344,7 +379,8 @@ class Node():
                         prev_conn.send(ping_json)
                     except Exception as ex:
                         self.destroy_connection(prev_conn.ws, conn_obj=prev_conn , on_exception=ex)
-                    
+                        
+            self.intermediate_hops.delete(from_node_id)# delete that , next hop 
             return conn
         else:
             ws.close()
@@ -370,7 +406,7 @@ class Node():
             if(len(msg)>1*1000*1000):#1M bytes
                 if(ws):
                     from_conn = self.connections_ws[ws]
-                    print from_conn.to_node_id
+#                    print from_conn.to_node_id
                     self.destroy_connection(ws)
                 print "##uploaded greater than 1 MB "
                 return 
@@ -389,13 +425,38 @@ class Node():
         
         dest_ids = []
         if(msg.dest_id):# single node
-            dest_ids = [msg.dest_id]
+            if(msg.dest_session_id):#a person in session sends a private message ? 
+                session_node_ids = db.get_node_ids_for_session(msg.dest_session_id)
+                for i in session_node_ids:
+                    if(session_node_ids[i][1] == msg.dest_id): #anonymous
+                        dest_ids = [session_node_ids[i][0]]
+                        break
+                #should anonymize just in case ? yes !
+                temp = session_node_ids.get(msg.src_id, None)
+                if(temp and temp[1]):#morph node_id to anonymous
+                    msg.anonymize_src_id = temp[1]
+
+            else:
+                dest_ids = [msg.dest_id]
                 
         elif(msg.dest_client_id):# broadcast to every client node if a destination is not specified
             dest_ids = db.get_node_ids_by_client_id(msg.dest_client_id)
-                
+            
         elif(msg.dest_session_id):
-            dest_ids = db.get_node_ids_for_session(msg.session_id)
+            session_node_ids = db.get_node_ids_for_session(msg.dest_session_id)
+            dest_ids = session_node_ids.keys()
+            temp = session_node_ids.get(msg.src_id, None)
+            if(temp and temp[1]):#morph node_id to anonymous
+                msg.anonymize_src_id = temp[1]
+            
+            if(msg.type != NEW_NODE_JOINED_SESSION  and msg.src_id and from_conn and not (msg.src_id in dest_ids)):
+                #invalid stuff
+                try:
+                    from_conn.send(json_util.dumps(Message(type=SESSION_UNAUTHORIZED, payload=None, dest_id=from_conn.to_node_id).to_son()))
+                except Exception as ex:
+                    self.destroy_connection(from_conn.ws, conn_obj=from_conn , on_exception=ex)
+
+            
             
         else:# should have atleast one destination set
             if(msg.type==CLIENT_CONFIG_REQUEST):
@@ -424,6 +485,7 @@ class Node():
                         from_conn.send(json_util.dumps(Message(type=CLIENT_CONFIG_RESPONSE, payload=payload, dest_id=from_conn.to_node_id).to_son()))
                     except Exception as ex:
                         self.destroy_connection(from_conn.ws, conn_obj=from_conn , on_exception=ex)
+                        
             return
         
         if(msg.type == NEW_NODE_JOINED_SESSION):
@@ -435,13 +497,19 @@ class Node():
             db.join_session(msg.dest_session_id, msg.src_id, update_in_db = update_in_db)
             
             
-        if(msg.type == NODE_UNJOINED_SESSION):
+        elif(msg.type == NODE_UNJOINED_SESSION):
             update_in_db = False
             if(from_conn and from_conn.is_external_node):
                 update_in_db  = True#this is the primary node the new node_id is connected to and requested to unjoin the session
             db.unjoin_session(msg.dest_session_id, msg.src_id, update_in_db = update_in_db)
             
-            
+        
+        elif(msg.type == NODE_REVEAL_ANONYMITY ):
+            update_in_db = False
+            if(from_conn and from_conn.is_external_node):
+                msg.payload = msg.src_id
+                update_in_db  = True#this is the primary node the new node_id is connected to and requested to unjoin the session
+            db.reveal_anonymity(msg.dest_session_id, msg.src_id, update_in_db=update_in_db)
         if(dest_ids):
             self._msg_recieved_counter+=1
             if(msg.src_id):
@@ -461,22 +529,27 @@ class Node():
                     if(msg.type==-102 or msg.type==0 or msg.type==None or msg.type==USER_OFFLINE_RESPONSE):
                         break# no need to insert into db , pings and config messages
                     
-#                     if(not from_conn):
-#                         from_conn = self.get_connection(msg.src_id)
-#                     
-#                     if(from_conn):
-#                         try:
-#                             from_conn.send(json_util.dumps(Message(type=USER_OFFLINE_RESPONSE, src_id=msg.dest_id).to_son()))
-#                         except:
-#                             logger.debug("wtf!!! connection closed !! %s"%msg.src_id)
-                    db.add_pending_messages(msg.dest_id, msg.type, json_util.dumps(msg.to_son()), current_timestamp)
+                    if(not from_conn):
+                        from_conn = self.get_connection(msg.src_id)
+                     
+                    if(from_conn):
+                        try:
+                            from_conn.send(json_util.dumps(Message(type=USER_OFFLINE_RESPONSE, src_id=msg.dest_id).to_son()))
+                        except:
+                            logger.debug("wtf!!! connection closed !! %s"%msg.src_id)
+                    db.add_pending_messages(msg.dest_id, msg.type, json_util.dumps(msg.to_son_anonymize()), current_timestamp)
                     self.send_a_ting(dest_id, msg)
                     #send a push notification to open and fetch any pending messages
                     break # cannot find any connection
                 try:
                     if(current_timestamp - conn.last_msg_recv_timestamp > 30*60*1000):#20 minutes no ping
                         raise Exception("Not ping recieved , stale connection to %s"%conn.to_node_id)#probably a stale connection 
-                    conn.send(json_util.dumps(msg.to_son()) , ref=msg)# this could raise 
+                    msg_json = None
+                    if(conn.is_external_node):
+                        msg_json = json_util.dumps(msg.to_son_anonymize())
+                    else:
+                        msg_json = json_util.dumps(msg.to_son())
+                    conn.send(msg_json , ref=msg)# this could raise 
                     break# successfully forwarded to node
                 except Exception as ex:
                     #keep it in db to send it later
@@ -601,7 +674,7 @@ class Node():
                 else:
                     logger.debug("not resending from buffer : " +str(timestamp))
         
-        logger.debug(current_node.node_id+": destroying "+ conn.connection_id+ " with node "+ conn.to_node_id)
+        logger.debug("%s : destroying %s  with node %s"%(current_node.node_id ,conn.connection_id,  conn.to_node_id))
         try:
             ws.close()
         except Exception as ex:
@@ -617,10 +690,8 @@ class Node():
 
 
 def set_socket_options(sock):
-
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 #    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, 0)
-
     l_onoff = 1                                                                                                                                                           
     l_linger = 10 # seconds,                                                                                                                                                     
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,                                                                                                                     
@@ -629,7 +700,100 @@ def set_socket_options(sock):
 
     TCP_USER_TIMEOUT = 18
     max_unacknowledged_timeout = 10*1000 #ms                                                                                                                                           
-    sock.setsockopt(socket.SOL_TCP, TCP_USER_TIMEOUT, max_unacknowledged_timeout)# close means a close understand ? 
+    #sock.setsockopt(socket.SOL_TCP, TCP_USER_TIMEOUT, max_unacknowledged_timeout)# close means a close understand ? 
+
+
+
+none_arr = [None, None]
+def create_or_update_session(sock , query_params=None, headers=None):
+    auth_key = query_params.get("auth_key",none_arr)[0]
+    if(not auth_key):
+        sock.close()
+        return
+    node_id , connection_id  = Node.get_connection_info(auth_key)
+    if(not node_id and not auth_key):
+        sock.close()
+        return
+    
+    session_name = query_params.get("session_name",none_arr)[0]
+    session_description = query_params.get("session_description",none_arr)[0]
+    is_anonymous = query_params.get("is_anonymous",none_arr)[0] == "true"
+    session_id = query_params.get("session_id",none_arr)[0]
+    
+    write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
+    if(session_description):
+        session_id = db.create_or_update_session(session_name, session_description, node_id, session_id=session_id)
+        db.join_session(session_id, node_id, is_anonymous=is_anonymous, update_in_db=True)
+        write_data(sock, session_id)
+    else:
+        write_data(sock, "")
+        
+    sock.close()
+    
+def get_session_info(sock , query_params=None, headers = None):
+    auth_key = query_params.get("auth_key",none_arr)[0]
+    node_id , connection_id  = Node.get_connection_info(auth_key)
+    if(not auth_key or not node_id):
+        sock.close()
+        return
+        
+    session_id = query_params.get("session_id",none_arr)[0]
+        
+    write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
+    session_info = db.get_session_by_id(session_id)
+    session_nodes = db.get_node_ids_for_session(session_id)
+    session_info["node_ids"] = map(lambda x : x[1] or x[0] , session_nodes.values()) # anonymous or original node id
+
+    session_owner_node_anonymous = session_nodes.get(session_info["node_id"],none_arr)[1]
+    session_info["node_id"] = session_owner_node_anonymous or session_info["node_id"]
+    
+    node_anonymous = session_nodes.get(node_id,None)
+    if(node_anonymous):
+        session_info["current_node_info"] = node_anonymous
+        
+    write_data(sock, json_util.dumps(session_info))
+    sock.close()
+
+def reveal_anonymity(sock ,query_params=None, headers=None):
+    auth_key = query_params.get("auth_key",none_arr)[0]
+    node_id , connection_id  = Node.get_connection_info(auth_key)
+    if(not node_id and not auth_key):
+        sock.close()
+        return
+    session_id = query_params.get("session_id",none_arr)[0]
+    write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
+    write_data(sock, "ok")
+    current_node.on_message(None, None, Message(src_id=node_id, dest_session_id=session_id, type=NODE_REVEAL_ANONYMITY))
+    sock.close()
+
+
+
+def join_session(sock , query_params=None, headers = None):
+    auth_key = query_params.get("auth_key",none_arr)[0]
+    node_id , connection_id  = Node.get_connection_info(auth_key)
+    if(not node_id and not auth_key):
+        sock.close()
+        return
+    session_id = query_params.get("session_id",none_arr)[0]
+    is_anonymous = query_params.get("is_anonymous",none_arr)[0] == "true"
+    
+    write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
+    write_data(sock, json_util.dumps(db.join_session(session_id, node_id, is_anonymous=is_anonymous,  update_in_db=True)))
+    current_node.on_message(None, None, Message(src_id=node_id, dest_session_id=session_id, type=NEW_NODE_JOINED_SESSION))
+    sock.close()
+
+def unjoin_session(sock , query_params=None, headers = None):
+    auth_key = query_params.get("auth_key",none_arr)[0]
+    node_id , connection_id  = Node.get_connection_info(auth_key)
+    if(not node_id and not auth_key):
+        sock.close()
+        return
+    session_id = query_params.get("session_id",none_arr)[0]
+    
+    write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
+    write_data(sock, json_util.dumps(db.unjoin_session(session_id, node_id)))
+    current_node.on_message(None, None, Message(src_id=node_id, dest_session_id=session_id, type=NODE_UNJOINED_SESSION))
+    sock.close()
 
 
 
@@ -859,5 +1023,12 @@ def start_transport_server(handlers=[]):
     server.serve_forever()    
 
 if __name__ =="__main__":
-    start_transport_server([('^/connectV2', websocket_handler_v2), ('^/connectV3', websocket_handler_v3)])
+    start_transport_server([('^/connectV2', websocket_handler_v2), 
+                            ('^/connectV3', websocket_handler_v3),
+                            ('^/unjoin_session', unjoin_session),
+                            ('^/join_session', join_session),
+                            ('^/reveal_anonymity', reveal_anonymity),
+                            ('^/get_session_info', get_session_info), 
+                            ('^/create_or_update_session', create_or_update_session)
+                          ])
     

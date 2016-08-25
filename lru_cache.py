@@ -26,6 +26,9 @@ class LRUCache:
                 self.cache.popitem(last=False)
         self.cache[key] = value
         
+    def delete(self, key):        
+        return self.cache.pop(key, None)
+        
 
 def test():
     from random import random

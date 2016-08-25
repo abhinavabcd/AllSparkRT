@@ -13,6 +13,7 @@ import gevent
 from logger import logger
 import time
 import pymongo
+import collections
 
 ### node ###
 # node = table(node_id , client_id, addr , addr_internal , port,  cluster_id , is_external_node, current_connections, max_concurrent_cnnections)
@@ -34,7 +35,7 @@ class Db():
     node_cache = LRUCache(10000)
     user_seq_cache = LRUCache(10000)
     session_node_ids_cache = LRUCache(100000)
-    
+    session_info_cache = LRUCache(10000)
     
     def init(self, user_name="", password="", host="127.0.0.1", namespace=""):
         client = MongoClient("mongodb://"+((user_name+":"+password+"@") if user_name else "" )+host+"/"+namespace)
@@ -191,11 +192,11 @@ class Db():
         node_ids = self.session_node_ids_cache.get(session_id)
         if(node_ids):
             return node_ids
-        ret = set()
+        ret = collections.OrderedDict()
         for i in self.session_nodes.find({"session_id":session_id}):
-            ret.add(i["node_id"])
+            ret[i["node_id"]] = (i["node_id"], i.get("anonymous_node_id",None))
             
-        self.session_node_ids_cache.put(session_id, ret)
+        self.session_node_ids_cache.set(session_id, ret)
         return ret
 
     def create_node(self, client_id , addr , addr_internal, port, is_server=False):
@@ -236,24 +237,61 @@ class Db():
         result = self.connections.delete_many({"to_node_id":node_id})
         logger.debug("deleted connections from db : "+str(result.deleted_count))
     
-    def create_session(self, name, description , client_id):
-        session_id = util_funcs.get_random_id(10)   
-        self.sessions.insert_one({"session_id":session_id, "name":name, "description":description, "client_id":client_id })
+    def create_or_update_session(self, name, description , node_id, session_id=None):
+        if(session_id==None):
+            session_id = util_funcs.get_random_id(10)   
+            self.sessions.insert_one({"session_id":session_id, "name":name, "description":description, "node_id":node_id , "created_at":time.time()})
+        else:
+            updates = {}
+            if(name):
+                updates["name"] = name
+            if(description):
+                updates["description"] = description
+            self.sessions.update_one({"session_id":session_id}, updates)
+            
         return session_id
     
+    def get_session_by_id(self, session_id):
+        session = self.session_info_cache.get(session_id)
+        if(not session):
+            session = self.sessions.find_one({"session_id":session_id})
+            self.session_info_cache.set(session_id , session)
+        return session
     
-    def join_session(self, session_id , node_id, update_in_db=True):
+    def join_session(self, session_id , node_id, is_anonymous=False , update_in_db=True):
         
-        is_inserted = True
+        anonymous_node_id = None
+        
+        
+        node_ids = self.session_node_ids_cache.get(session_id)
+        
+        if(node_ids):
+            node_info = node_ids.get(node_id, None)
+            if(node_info):
+                #already in session
+                return node_info
+                
         if(update_in_db):
-            result = self.session_nodes.insert_one({"session_id":session_id, "node_id":node_id})
-            is_inserted = result.inserted_id!=None
+            doc = {"session_id":session_id, "node_id":node_id}
+            if(is_anonymous):
+                anonymous_node_id = "anonymous_"+util_funcs.get_random_id(10)
+                doc["anonymous_node_id"] = anonymous_node_id
+                
+            result = self.session_nodes.insert_one(doc)
+            if(not result.inserted_id):
+                return None
+        else:
+            doc = {"session_id":session_id, "node_id":node_id}
+            ret = self.session_nodes.find_one(doc)
+            if(ret):
+                anonymous_node_id = ret["anonymous_node_id"]
         
         node_ids = self.session_node_ids_cache.get(session_id)
         if(node_ids):
-            node_ids.add(node_id)
+            if(not node_ids.get(node_id, None)):
+                node_ids[node_id] = (node_id, anonymous_node_id)
                     
-        return is_inserted
+        return (node_id, anonymous_node_id)
     
     
     def unjoin_session(self, session_id, node_id , update_in_db=True):
@@ -262,7 +300,18 @@ class Db():
         
         node_ids = self.session_node_ids_cache.get(session_id)
         if(node_ids):
-            node_ids.remove(node_id)
+            del node_ids[node_id]
+        
+        return
+    
+    
+    def reveal_anonymity(self, session_id, node_id, update_in_db=True):
+        if(update_in_db):
+            result = self.session_nodes.update_one({"session_id":session_id, "node_id":node_id}, {"anonymous_node_id":None})
+        
+        node_ids = self.session_node_ids_cache.get(session_id)
+        if(node_ids):
+            node_ids[node_id] = (node_id, None)
         
         return
         

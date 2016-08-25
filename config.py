@@ -5,9 +5,9 @@ Created on May 25, 2016
 '''
 import datetime
 
-APPLICATION_NAME = "MyFirstChatApplication"
+APPLICATION_NAME = "InstaKnow"
 
-SERVER_SECRET = "XXXXXXXXX"
+SERVER_SECRET = "asdsadkjhsakjdhjksadasdasd"
 SERVER_AUTH_KEY_STRING = "user_key"
 
 DB_NAME = "allspark_rt_db"
