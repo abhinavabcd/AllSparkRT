@@ -237,18 +237,9 @@ class Db():
         result = self.connections.delete_many({"to_node_id":node_id})
         logger.debug("deleted connections from db : "+str(result.deleted_count))
     
-    def create_or_update_session(self, name, description , node_id, session_id=None):
-        if(session_id==None):
-            session_id = util_funcs.get_random_id(10)   
-            self.sessions.insert_one({"session_id":session_id, "name":name, "description":description, "node_id":node_id , "created_at":time.time()})
-        else:
-            updates = {}
-            if(name):
-                updates["name"] = name
-            if(description):
-                updates["description"] = description
-            self.sessions.update_one({"session_id":session_id}, updates)
-            
+    def create_session(self , node_id, session_id=None):
+        session_id = session_id or util_funcs.get_random_id(10)
+        self.sessions.insert_one({"session_id":session_id, "node_id":node_id , "created_at":time.time()})   
         return session_id
     
     def get_session_by_id(self, session_id):

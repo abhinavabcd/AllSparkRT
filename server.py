@@ -29,6 +29,7 @@ import socket
 import struct
 import logging
 from lru_cache import LRUCache
+from cookies import decode_signed_value
 monkey.patch_all()
 import util_funcs
 import sys
@@ -560,46 +561,49 @@ class Node():
     
     def send_a_ting(self, dest_id , msg=None):
         #put to a queue
-        node = db.get_node_by_id(dest_id)
-        if(not node):
-            logger.debug("node not yet registered")
+        try:
+            node = db.get_node_by_id(dest_id)
+            if(not node):
+                logger.debug("node not yet registered")
+                
+                msg = '{"dest_id":"'+msg.src_id+'", "type":-3, "src_id":"'+dest_id+'"}'
+                self.on_message(None, msg)
+                return
             
-            msg = '{"dest_id":"'+msg.src_id+'", "type":-3, "src_id":"'+dest_id+'"}'
-            self.on_message(None, msg)
+            
+            gcm_key = node.get("gcm_key", None)
+            if(gcm_key and node.get("last_push_sent", config.EPOCH_DATETIME)+timedelta(minutes=10)<datetime.now()):
+                node["last_push_sent"] = datetime.now()
+                logger.debug("sending a push notification")
+                GCM_HEADERS ={'Content-Type':'application/json',
+                              'Authorization':'key='+config.GCM_API_KEY 
+                             }
+                
+                title = "You have pending messages"
+                if(msg and msg.type==1):
+                    title = msg.payload
+                    
+                if(msg and msg.type==2):
+                    title = "Sent you a poke"
+                    
+                    
+                packetData={"message":title,
+                            "payload1":"" if not msg else msg.src_id,
+                            "notification_type": 101
+                            }
+                registrationIds =[
+                                  gcm_key
+                ]
+                data = {"registration_ids":registrationIds,"data":packetData }
+                logger.debug(registrationIds)
+                post= json_util.dumps(data)
+                headers = GCM_HEADERS
+                ret=get_data('https://android.googleapis.com/gcm/send',post,headers).read()
+                logger.debug(ret)
+            else:
+                logger.debug("too soon to send another push notification")
+        except:
             return
-        
-        
-        gcm_key = node.get("gcm_key", None)
-        if(gcm_key and node.get("last_push_sent", config.EPOCH_DATETIME)+timedelta(minutes=10)<datetime.now()):
-            node["last_push_sent"] = datetime.now()
-            logger.debug("sending a push notification")
-            GCM_HEADERS ={'Content-Type':'application/json',
-                          'Authorization':'key='+config.GCM_API_KEY 
-                         }
-            
-            title = "You have pending messages"
-            if(msg and msg.type==1):
-                title = msg.payload
-                
-            if(msg and msg.type==2):
-                title = "Sent you a poke"
-                
-                
-            packetData={"message":title,
-                        "payload1":"" if not msg else msg.src_id,
-                        "notification_type": 101
-                        }
-            registrationIds =[
-                              gcm_key
-            ]
-            data = {"registration_ids":registrationIds,"data":packetData }
-            logger.debug(registrationIds)
-            post= json_util.dumps(data)
-            headers = GCM_HEADERS
-            ret=get_data('https://android.googleapis.com/gcm/send',post,headers).read()
-            logger.debug(ret)
-        else:
-            logger.debug("too soon to send another push notification")
             
     
     
@@ -705,7 +709,7 @@ def set_socket_options(sock):
 
 
 none_arr = [None, None]
-def create_or_update_session(sock , query_params=None, headers=None):
+def create_session(sock , query_params=None, headers=None):
     auth_key = query_params.get("auth_key",none_arr)[0]
     if(not auth_key):
         sock.close()
@@ -715,18 +719,16 @@ def create_or_update_session(sock , query_params=None, headers=None):
         sock.close()
         return
     
-    session_name = query_params.get("session_name",none_arr)[0]
-    session_description = query_params.get("session_description",none_arr)[0]
     is_anonymous = query_params.get("is_anonymous",none_arr)[0] == "true"
-    session_id = query_params.get("session_id",none_arr)[0]
+    
+    temp = query_params.get("_session_id_",none_arr)[0] 
+    if(temp):
+        session_id = decode_signed_value(config.SERVER_SECRET, "session_id", urllib.unquote(temp))
     
     write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
-    if(session_description):
-        session_id = db.create_or_update_session(session_name, session_description, node_id, session_id=session_id)
-        db.join_session(session_id, node_id, is_anonymous=is_anonymous, update_in_db=True)
-        write_data(sock, session_id)
-    else:
-        write_data(sock, "")
+    session_id = db.create_session(node_id, session_id=session_id)
+    db.join_session(session_id, node_id, is_anonymous=is_anonymous, update_in_db=True)
+    write_data(sock, session_id)
         
     sock.close()
     
@@ -741,6 +743,8 @@ def get_session_info(sock , query_params=None, headers = None):
         
     write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
     session_info = db.get_session_by_id(session_id)
+    if(session_info):
+        session_info = session_info.copy()
     session_nodes = db.get_node_ids_for_session(session_id)
     session_info["node_ids"] = map(lambda x : x[1] or x[0] , session_nodes.values()) # anonymous or original node id
 
@@ -1029,6 +1033,6 @@ if __name__ =="__main__":
                             ('^/join_session', join_session),
                             ('^/reveal_anonymity', reveal_anonymity),
                             ('^/get_session_info', get_session_info), 
-                            ('^/create_or_update_session', create_or_update_session)
+                            ('^/create_session', create_session)
                           ])
     
