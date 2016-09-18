@@ -478,9 +478,10 @@ class Node():
                 if(fetch_inbox_messages):
                     fetch_inbox_messages_from_seq = user_service_request.get("fetch_inbox_messages_from_seq",-1)
                     fetch_inbox_messages_to_seq = user_service_request.get("fetch_inbox_messages_to_seq",-1)
-                    fetch_inbox_messages_from_timestamp = user_service_request.get("fetch_inbox_messages_from_time_stamp",0)
+                    fetch_inbox_messages_from_timestamp = user_service_request.get("fetch_inbox_messages_from_time_stamp",None)
+                    fetch_inbox_messages_to_timestamp = user_service_request.get("fetch_inbox_messages_to_time_stamp",None)
                     
-                    messages, from_seq , to_seq, has_more = db.fetch_inbox_messages(msg.src_id, fetch_inbox_messages_from_seq, fetch_inbox_messages_to_seq, fetch_inbox_messages_from_timestamp)
+                    messages, from_seq , to_seq, has_more = db.fetch_inbox_messages(msg.src_id, fetch_inbox_messages_from_seq, fetch_inbox_messages_to_seq, fetch_inbox_messages_from_timestamp, fetch_inbox_messages_to_timestamp)
                     payload = json_util.dumps({"messages":messages, "from_seq":from_seq, "to_seq":to_seq, "more":has_more, "server_timestamp_add_diff":int(current_timestamp-user_time_stamp)})
                     try:
                         from_conn.send(json_util.dumps(Message(type=CLIENT_CONFIG_RESPONSE, payload=payload, dest_id=from_conn.to_node_id).to_son()))
@@ -721,15 +722,28 @@ def create_session(sock , query_params=None, headers=None):
     
     is_anonymous = query_params.get("is_anonymous",none_arr)[0] == "true"
     
-    temp = query_params.get("_session_id_",none_arr)[0] 
+    temp = query_params.get("_session_info_",none_arr)[0] 
+    #_session_info_ will contains   [session_id,  [[a, b], [c]] ]
+    nodes_in_session = [[node_id, True, None]]
     if(temp):
-        session_id = decode_signed_value(config.SERVER_SECRET, "session_id", urllib.unquote(temp))
+        session_info_json = json_util.loads(decode_signed_value(config.SERVER_SECRET, "session_info", urllib.unquote(temp)))
+        session_id = session_info_json[0]
+        session_nodes = session_info_json[1]#[ [a,b] , [c]]
+        
+        for i in session_nodes:
+            if(len(i)>1):
+                nodes_in_session.append([i[0] , True, i[1]])
+            else:
+                node_id =  nodes_in_session.append([i[0] , False,None])
+                
+                
     
     write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
     session_id = db.create_session(node_id, session_id=session_id)
-    db.join_session(session_id, node_id, is_anonymous=is_anonymous, update_in_db=True)
-    write_data(sock, session_id)
+    for node_id, is_anonymous, anonymous_node_id in nodes_in_session:
+        db.join_session(session_id, node_id, is_anonymous=is_anonymous, update_in_db=True, anonymous_node_id=anonymous_node_id)
         
+    write_data(sock, session_id)        
     sock.close()
     
 def get_session_info(sock , query_params=None, headers = None):
@@ -851,8 +865,7 @@ def websocket_handler_v3(sock, query_params=None, headers= None, connection_vali
                 sock.close()
                         
     else:
-        
-        if(connection_validation):
+        if(connection_validation and not connection_id):#only for external nodes
             validation_key  = query_params.get("validation_key",None)
             if(not validation_key or not current_node.is_connection_valid(current_node.node_id , validation_key[0])):
                 sock.close()
@@ -955,7 +968,7 @@ def handle_connection(socket, address):
 def start_transport_server(handlers=[]):
     global current_node
     global request_handlers
-    db.init(user_name="", password="", host="localhost", namespace="instaknow")
+    db.init(db_name=config.DB_NAME , user_name=config.DB_USER_NAME, password=config.DB_PASSWORD, host=config.DB_HOST, namespace=config.DB_NAMESPACE) 
         
     import argparse
 

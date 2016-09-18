@@ -6,7 +6,6 @@ Created on May 23, 2016
 
 
 from pymongo import MongoClient
-import config
 import util_funcs
 from lru_cache import LRUCache
 import gevent
@@ -37,9 +36,9 @@ class Db():
     session_node_ids_cache = LRUCache(100000)
     session_info_cache = LRUCache(10000)
     
-    def init(self, user_name="", password="", host="127.0.0.1", namespace=""):
+    def init(self, db_name,  user_name="", password="", host="127.0.0.1", namespace=""):
         client = MongoClient("mongodb://"+((user_name+":"+password+"@") if user_name else "" )+host+"/"+namespace)
-        self.db = client[config.DB_NAME]
+        self.db = client[db_name]
         self.nodes = self.db["nodes"]
         self.connections = self.db["connections"]        
         self.sessions = self.db["sessions"]
@@ -249,9 +248,7 @@ class Db():
             self.session_info_cache.set(session_id , session)
         return session
     
-    def join_session(self, session_id , node_id, is_anonymous=False , update_in_db=True):
-        
-        anonymous_node_id = None
+    def join_session(self, session_id , node_id, is_anonymous=False , update_in_db=True, anonymous_node_id=None):
         
         
         node_ids = self.session_node_ids_cache.get(session_id)
@@ -265,7 +262,7 @@ class Db():
         if(update_in_db):
             doc = {"session_id":session_id, "node_id":node_id}
             if(is_anonymous):
-                anonymous_node_id = "anonymous_"+util_funcs.get_random_id(10)
+                anonymous_node_id = anonymous_node_id or "anonymous_"+util_funcs.get_random_id(10)
                 doc["anonymous_node_id"] = anonymous_node_id
                 
             result = self.session_nodes.insert_one(doc)
@@ -320,25 +317,34 @@ class Db():
             
         self.pending_messages.insert_one({"node_id_seq":node_id+"__"+str(seq), "message_type":message_type, "message_json":message_json, "timestamp":current_timestamp})
             
-    def fetch_inbox_messages(self, node_id , from_seq=-1, to_seq = -1,  last_message_seen_time=None):   
+    def fetch_inbox_messages(self, node_id , from_seq=-1, to_seq = -1,  timea=None , timeb=None):   
         if(to_seq==-1):
             to_seq = self.get_seq(node_id, update=False)
         if(from_seq==-1):
             from_seq = max(0 , to_seq - 50)-1
             
+        if(timeb==None):
+            timeb=(time.time()*1000)
+        if(timea==None):
+            timea=0
         ret = []
         flag = False
         more  = False
         for i in range(to_seq, from_seq, -1):
-            pending_messages = self.pending_messages.find({"node_id_seq": node_id+"__"+str(i) , "timestamp": {"$gt":last_message_seen_time}}).sort([("timestamp", pymongo.DESCENDING)])
+            pending_messages = self.pending_messages.find({"node_id_seq": node_id+"__"+str(i)}).sort([("timestamp", pymongo.DESCENDING)])
             flag = True
             for j in pending_messages:
                 flag = False
-                ret.append(j)
+                timestamp = j.get("timestamp",0)
+                is_invalid = timestamp<timea or timestamp > timeb
+                if(is_invalid):
+                    continue
                 if(len(ret)>50):
                     flag = True
                     more = True
                     break
+                ret.append(j)
+                
             if(flag):
                 break
         return map(lambda x: x["message_json"] ,  ret), i, to_seq, more
