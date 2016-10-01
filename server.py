@@ -808,13 +808,14 @@ def push_message(sock ,query_params=None, headers=None):
     auth_key = query_params.get("auth_key",none_arr)[0]
     node_id , connection_id  = Node.get_connection_info(auth_key)
     node = db.get_node_by_id(node_id)
-    if(not node or not node.get("is_app_id", False)):
+    if(not node or not node.get("is_app_node", False)):
         sock.close()
         return
     to_nodes = query_params.get("to_nodes",none_arr)[0]
     if(not to_nodes):
         sock.close()
         return 
+    to_nodes = json_util.loads(to_nodes)
     payload = json_util.loads(query_params.get("payload",none_arr)[0])
     
     for node_id in to_nodes:
@@ -1087,7 +1088,7 @@ if __name__ =="__main__":
                             ('^/join_session', join_session),
                             ('^/reveal_anonymity', reveal_anonymity),
                             ('^/get_session_info', get_session_info), 
-                            ('^/create_session', create_session)
+                            ('^/create_session', create_session),
                             ('^/push_message', push_message)
                           ])
     
