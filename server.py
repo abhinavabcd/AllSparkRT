@@ -328,7 +328,7 @@ class Node():
             
             conn = self.get_connection(intermediate_node_id)
             if(not temp):
-                self.intermediate_hops.put(node_id ,  (time.time(), conn))
+                self.intermediate_hops.set(node_id ,  (time.time(), conn))
             return conn
         else:
             # try making connection to the server            
