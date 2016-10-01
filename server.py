@@ -60,6 +60,9 @@ NODE_REVEAL_ANONYMITY  = 104
 ### 
 
 
+##session types
+SESSION_TYPE_NORMAL = 0
+SESSION_TYPE_GAME = 1
 
 
 CONNECT_PATH = "/connectV2"
@@ -444,8 +447,20 @@ class Node():
             dest_ids = db.get_node_ids_by_client_id(msg.dest_client_id)
             
         elif(msg.dest_session_id):
-            session_node_ids = db.get_node_ids_for_session(msg.dest_session_id)
-            dest_ids = session_node_ids.keys()
+            session = db.get_session_by_id(msg.dest_session_id)
+            session_type = SESSION_TYPE_NORMAL if not session else session.get("session_type", SESSION_TYPE_NORMAL)
+            master_node_id = None
+            if(session_type==SESSION_TYPE_GAME):
+                master_node_id = session.get("session_game_master_node_id")
+                
+            if(session_type==SESSION_TYPE_GAME and msg.src_id!=master_node_id):
+                dest_ids = [master_node_id]
+            
+            else:#for normal sessions or game_master sends message , broadcast all
+                session_node_ids = db.get_node_ids_for_session(msg.dest_session_id)
+                dest_ids = session_node_ids.keys()
+
+                
             temp = session_node_ids.get(msg.src_id, None)
             if(temp and temp[1]):#morph node_id to anonymous
                 msg.anonymize_src_id = temp[1]
@@ -456,8 +471,9 @@ class Node():
                     from_conn.send(json_util.dumps(Message(type=SESSION_UNAUTHORIZED, payload=None, dest_id=from_conn.to_node_id).to_son()))
                 except Exception as ex:
                     self.destroy_connection(from_conn.ws, conn_obj=from_conn , on_exception=ex)
-
-            
+    
+                
+                
             
         else:# should have atleast one destination set
             if(msg.type==CLIENT_CONFIG_REQUEST):
@@ -719,14 +735,15 @@ def create_session(sock , query_params=None, headers=None):
     if(not node_id and not auth_key):
         sock.close()
         return
+
+    node = db.get_node_by_id(node_id)
+    is_anonymous = query_params.get("is_anonymous",none_arr)[0]
     
-    is_anonymous = query_params.get("is_anonymous",none_arr)[0] == "true"
-    
-    temp = query_params.get("_session_info_",none_arr)[0] 
+    temp = query_params.get("_session_info_",none_arr)[0]
     #_session_info_ will contains   [session_id,  [[a, b], [c]] ]
-    nodes_in_session = [[node_id, True, None]]
-    if(temp):
-        session_info_json = json_util.loads(decode_signed_value(config.SERVER_SECRET, "session_info", urllib.unquote(temp)))
+    nodes_in_session = []
+    if(node.get("is_app_node", False) and temp):
+        session_info_json = json_util.loads(temp)
         session_id = session_info_json[0]
         session_nodes = session_info_json[1]#[ [a,b] , [c]]
         
@@ -735,8 +752,10 @@ def create_session(sock , query_params=None, headers=None):
                 nodes_in_session.append([i[0] , True, i[1]])
             else:
                 node_id =  nodes_in_session.append([i[0] , False,None])
-                
-                
+    
+    else:
+        nodes_in_session = [[node_id, True, None]]
+
     
     write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
     session_id = db.create_session(node_id, session_id=session_id)
@@ -785,6 +804,27 @@ def reveal_anonymity(sock ,query_params=None, headers=None):
     sock.close()
 
 
+def push_message(sock ,query_params=None, headers=None):
+    auth_key = query_params.get("auth_key",none_arr)[0]
+    node_id , connection_id  = Node.get_connection_info(auth_key)
+    node = db.get_node_by_id(node_id)
+    if(not node or not node.get("is_app_id", False)):
+        sock.close()
+        return
+    to_nodes = query_params.get("to_nodes",none_arr)[0]
+    if(not to_nodes):
+        sock.close()
+        return 
+    payload = json_util.loads(query_params.get("payload",none_arr)[0])
+    
+    for node_id in to_nodes:
+        payload["dest_id"] = node_id
+        msg_obj = Message(**payload)
+        current_node.on_message(None, None , msg_obj)
+            
+    write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
+    write_data(sock, "ok")
+    sock.close()
 
 def join_session(sock , query_params=None, headers = None):
     auth_key = query_params.get("auth_key",none_arr)[0]
@@ -792,11 +832,12 @@ def join_session(sock , query_params=None, headers = None):
     if(not node_id and not auth_key):
         sock.close()
         return
+    
     session_id = query_params.get("session_id",none_arr)[0]
-    is_anonymous = query_params.get("is_anonymous",none_arr)[0] == "true"
+    anonymous_id = query_params.get("anonymous_id",none_arr)[0]
     
     write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
-    write_data(sock, json_util.dumps(db.join_session(session_id, node_id, is_anonymous=is_anonymous,  update_in_db=True)))
+    write_data(sock, json_util.dumps(db.join_session(session_id, node_id, anonymous_node_id=anonymous_id, update_in_db=True)))
     current_node.on_message(None, None, Message(src_id=node_id, dest_session_id=session_id, type=NEW_NODE_JOINED_SESSION))
     sock.close()
 
@@ -850,7 +891,7 @@ def websocket_handler_v3(sock, query_params=None, headers= None, connection_vali
             
         # based on client_id , session_id , send a node details to connect to
         if(session_id or client_id or True):
-            node = db.get_a_connection_node(need_80_port=need_80_port)
+            node = db.get_a_connection_node(session_id=session_id, need_80_port=need_80_port)
             if(connection_validation):
                 node["validation_key"] = current_node.create_connection_validation_key(node.get("node_id"))
             #TODO: logically decide a node use has to connect to
@@ -1047,5 +1088,6 @@ if __name__ =="__main__":
                             ('^/reveal_anonymity', reveal_anonymity),
                             ('^/get_session_info', get_session_info), 
                             ('^/create_session', create_session)
+                            ('^/push_message', push_message)
                           ])
     

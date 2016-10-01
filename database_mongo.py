@@ -112,7 +112,13 @@ class Db():
         node = self.get_node_by_id(node_id, force_refresh_from_db=True)
         
                 
-    def get_a_connection_node(self, need_80_port=False):
+    def get_a_connection_node(self, session_id=None, need_80_port=False):
+        if(session_id!=None):
+            session = self.get_session_by_id(session_id)
+            fixed_node_id = session.get("is_fixed_node_id", None)
+            if(fixed_node_id):
+                return self.get_node_by_id(fixed_node_id)
+                
         query = {"addr": {"$ne": None} , "last_stats_refresh_timestamp" :{"$gt" : int(time.time()) - 5*60 +1  }, "can_join": {"$gt": 0}}
         if(need_80_port):
             query["proxy_80_port"] = {"proxy_80_port": {"$ne":None}}
@@ -248,7 +254,7 @@ class Db():
             self.session_info_cache.set(session_id , session)
         return session
     
-    def join_session(self, session_id , node_id, is_anonymous=False , update_in_db=True, anonymous_node_id=None):
+    def join_session(self, session_id , node_id, update_in_db=True, anonymous_node_id=None):
         
         
         node_ids = self.session_node_ids_cache.get(session_id)
@@ -261,7 +267,7 @@ class Db():
                 
         if(update_in_db):
             doc = {"session_id":session_id, "node_id":node_id}
-            if(is_anonymous):
+            if(anonymous_node_id):
                 anonymous_node_id = anonymous_node_id or "anonymous_"+util_funcs.get_random_id(10)
                 doc["anonymous_node_id"] = anonymous_node_id
                 

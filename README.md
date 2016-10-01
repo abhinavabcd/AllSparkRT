@@ -109,5 +109,11 @@ For users who cannot connect to custom ports which server start , we additonally
 
 
 
+apt-get install libevent-dev
+apt-get install python-all-dev
+easy_install greenlet
+easy_install gevent 
+sudo python -m pip install pymongo
+
 -Free to Contribute.
 
