@@ -31,6 +31,7 @@ import logging
 from lru_cache import LRUCache
 from cookies import decode_signed_value
 import signal
+import traceback
 monkey.patch_all()
 import util_funcs
 import sys
@@ -314,11 +315,12 @@ class Node():
             
             temp = self.intermediate_hops.get(node_id, None)
             intermediate_node_id = None
+            conn = None
             if(temp):
-                timestamp, intermediate_node_id = temp
+                timestamp, conn = temp
                 if(time.time() - timestamp > 5*60):#5 minutes
-                    intermediate_node_id = temp = None
-                    self.intermediate_hops.delete(node_id) # remove and reetch again
+                    intermediate_node_id = temp = conn = None
+                    self.intermediate_hops.delete(node_id) # remove and fetch again
                     
                 
             if(not intermediate_node_id):
@@ -326,8 +328,8 @@ class Node():
                 if(intermediate_node_id==None or intermediate_node_id==current_node.node_id):
                     return None
             
-            conn = self.get_connection(intermediate_node_id)
-            if(not temp):
+            if(not conn):# try and get new connection to the intermediate node
+                conn = self.get_connection(intermediate_node_id)
                 self.intermediate_hops.set(node_id ,  (time.time(), conn))
             return conn
         else:
@@ -336,7 +338,7 @@ class Node():
             while(c>0):
                 try:   
                     node = db.get_node_by_id(node_id)
-                    conn = self.intermediate_hops.get(node_id, None)
+                    timestamp , conn = self.intermediate_hops.get(node_id, None)
                     if(conn): return conn
                     
                     if(node.get("cluster_id", None)!=self.cluster_id):
@@ -347,6 +349,8 @@ class Node():
                     conn =  self.make_new_connection(node_id)
                     return conn
                 except Exception as e:
+                    exc_type, exc_value, exc_traceback = sys.exc_info()
+                    traceback.print_tb(exc_traceback)
                     logger.error(sys.exc_info())
                     pass
                 c-=1
@@ -606,7 +610,7 @@ class Node():
                     title = msg.payload
                     
                 if(msg and msg.type==2):
-                    title = "Sent you a poke"
+                    title = "Sent you"
                     
                     
                 packetData={"message":title,
