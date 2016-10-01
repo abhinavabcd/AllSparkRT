@@ -85,6 +85,7 @@ db = Db()
 max_assumed_sent_buffer_time = 100*1000 #milli seconds # TCP_USER_TIMEOUT kernel setting
 
 current_node = None
+stream_server = None
 request_handlers = []
 MONOCAST_DIRECTLY = 1
 BROADCAST_ALL = 2
@@ -749,17 +750,17 @@ def create_session(sock , query_params=None, headers=None):
         
         for i in session_nodes:
             if(len(i)>1):
-                nodes_in_session.append([i[0] , True, i[1]])
+                nodes_in_session.append([i[0], True,  i[1]])
             else:
-                node_id =  nodes_in_session.append([i[0] , False,None])
+                node_id =  nodes_in_session.append([i[0], False,  None])
     
     else:
-        nodes_in_session = [[node_id, True, None]]
+        nodes_in_session = [[node_id, is_anonymous, None]]
 
     
     write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
     session_id = db.create_session(node_id, session_id=session_id)
-    for node_id, is_anonymous, anonymous_node_id in nodes_in_session:
+    for node_id, is_anonymous,  anonymous_node_id in nodes_in_session:
         db.join_session(session_id, node_id, is_anonymous=is_anonymous, update_in_db=True, anonymous_node_id=anonymous_node_id)
         
     write_data(sock, session_id)        
@@ -1010,6 +1011,7 @@ def handle_connection(socket, address):
 def start_transport_server(handlers=[]):
     global current_node
     global request_handlers
+    global stream_server
     db.init(db_name=config.DB_NAME , user_name=config.DB_USER_NAME, password=config.DB_PASSWORD, host=config.DB_HOST, namespace=config.DB_NAMESPACE) 
         
     import argparse
@@ -1075,11 +1077,11 @@ def start_transport_server(handlers=[]):
     
     request_handlers.sort(key = lambda x:x[0] , reverse=True)
     
-    server = StreamServer(
+    stream_server = StreamServer(
     ('', int(args.port)), handle_connection)
     
     
-    server.serve_forever()    
+    stream_server.serve_forever()    
 
 if __name__ =="__main__":
     start_transport_server([('^/connectV2', websocket_handler_v2), 

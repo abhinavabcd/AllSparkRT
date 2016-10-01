@@ -254,7 +254,7 @@ class Db():
             self.session_info_cache.set(session_id , session)
         return session
     
-    def join_session(self, session_id , node_id, update_in_db=True, anonymous_node_id=None):
+    def join_session(self, session_id , node_id, is_anonymous=False, update_in_db=True, anonymous_node_id=None):
         
         
         node_ids = self.session_node_ids_cache.get(session_id)
@@ -267,7 +267,7 @@ class Db():
                 
         if(update_in_db):
             doc = {"session_id":session_id, "node_id":node_id}
-            if(anonymous_node_id):
+            if(is_anonymous):
                 anonymous_node_id = anonymous_node_id or "anonymous_"+util_funcs.get_random_id(10)
                 doc["anonymous_node_id"] = anonymous_node_id
                 
