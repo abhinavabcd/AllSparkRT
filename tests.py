@@ -4,6 +4,8 @@ Created on May 26, 2016
 @author: abhinav
 '''
 import json
+from urllib_utils import get_data
+import urllib
 
 
 
@@ -13,7 +15,7 @@ def test0():
     import cookies 
     import config
     
-    auth_key = cookies.create_signed_value(config.SERVER_SECRET  , config.SERVER_AUTH_KEY_STRING ,json.dumps({'node_id':"asdasdasdasdas"}))
+    auth_key = cookies.create_signed_value(config.SERVER_SECRET  , config.SERVER_AUTH_KEY_STRING ,json.dumps({'node_id':"app_engine_routerapp"}))
     print auth_key
     
     return True
@@ -291,6 +293,14 @@ def mongo_db_test_1():
     db.update_node_info("g3cK4ljIyh1468240301", num_connections=1650, num_max_connections=1500)
     print db.get_a_connection_node()
     
+def send_push_routerapp():
+    import cookies 
+    import config
+    auth_key = cookies.create_signed_value(config.SERVER_SECRET  , config.SERVER_AUTH_KEY_STRING ,json.dumps({'node_id':"app_engine_routerapp"}))
+       
+    #print get_data("http://rt.getrouterapp.com/push_message?auth_key="+auth_key, post=urllib.urlencode({"to_nodes": json.dumps(['319815472031']), "payload":'{"src_id": "147536164876", "timestamp": 1475238418310, "payload2": "{\\"dest_session_id\\":\\"1475234654.001990079879761-QCyXLnaNtT__147536164876\\",\\"id\\":\\"5LVg0\\",\\"payload\\":\\"can i join this weekend ?\\",\\"type\\":1}", "payload1": "1475234654.001990079879761-QCyXLnaNtT__147536164876", "type": 4, "payload": "1475234654.001990079879761-QCyXLnaNtT"}'})).read()  
+    print get_data("http://rt.getrouterapp.com/create_session?auth_key="+auth_key, post=urllib.urlencode({"_session_info_": json.dumps(['abhinav_sindhu', [['147536164876'], ['319815472031']] ])})).read()
+
 
 if __name__ == "__main__":
     #load_test_single_server()
@@ -298,5 +308,6 @@ if __name__ == "__main__":
     #mongo_db_test()
     #mongo_db_test_1()
     test0()
+    send_push_routerapp()
     test_decode_key()
     #mongo_db_test_1()

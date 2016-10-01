@@ -110,6 +110,14 @@ class Db():
         #refetch node from db
     
         node = self.get_node_by_id(node_id, force_refresh_from_db=True)
+    
+    
+    def disable_serving_node(self, node_id):
+        node = self.get_node_by_id(node_id)
+        u = {"$set":{}}
+        u["$set"]["last_stats_refresh_timestamp"] = 0# implies disabled
+        self.nodes.update_one({"node_id":node_id}, u)
+        
         
                 
     def get_a_connection_node(self, session_id=None, need_80_port=False):
@@ -242,9 +250,9 @@ class Db():
         result = self.connections.delete_many({"to_node_id":node_id})
         logger.debug("deleted connections from db : "+str(result.deleted_count))
     
-    def create_session(self , node_id, session_id=None):
+    def create_session(self , node_id, session_id=None, session_type=0, session_game_master_node_id=None):
         session_id = session_id or util_funcs.get_random_id(10)
-        self.sessions.insert_one({"session_id":session_id, "node_id":node_id , "created_at":time.time()})   
+        self.sessions.insert_one({"session_id":session_id, "node_id":node_id , "created_at":time.time(), "session_type":session_type, "session_game_master_node_id":session_game_master_node_id})   
         return session_id
     
     def get_session_by_id(self, session_id):
@@ -327,7 +335,7 @@ class Db():
         if(to_seq==-1):
             to_seq = self.get_seq(node_id, update=False)
         if(from_seq==-1):
-            from_seq = max(0 , to_seq - 50)-1
+            from_seq = max(0 , to_seq - 50)
             
         if(timeb==None):
             timeb=(time.time()*1000)
@@ -335,20 +343,19 @@ class Db():
             timea=0
         ret = []
         flag = False
-        more  = False
-        for i in range(to_seq, from_seq, -1):
-            pending_messages = self.pending_messages.find({"node_id_seq": node_id+"__"+str(i)}).sort([("timestamp", pymongo.DESCENDING)])
-            flag = True
+        more = False
+        for i in range(to_seq, from_seq-1, -1):
+            pending_messages = self.pending_messages.find({"node_id_seq": node_id+"__"+str(i)})
+            pending_messages = sorted(pending_messages, key = lambda x:x.get("timestamp", 0) , reverse=True)# read from end
             for j in pending_messages:
-                flag = False
                 timestamp = j.get("timestamp",0)
-                is_invalid = timestamp<timea or timestamp > timeb
+                is_invalid = timestamp<=timea or timestamp >= timeb
                 if(is_invalid):
                     continue
-                if(len(ret)>50):
-                    flag = True
+                if(len(ret)>100):
+                    flag  = True #no more than 100 messages
                     more = True
-                    break
+                    
                 ret.append(j)
                 
             if(flag):

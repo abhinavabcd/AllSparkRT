@@ -30,6 +30,7 @@ import struct
 import logging
 from lru_cache import LRUCache
 from cookies import decode_signed_value
+import signal
 monkey.patch_all()
 import util_funcs
 import sys
@@ -449,7 +450,9 @@ class Node():
             
         elif(msg.dest_session_id):
             session = db.get_session_by_id(msg.dest_session_id)
-            session_type = SESSION_TYPE_NORMAL if not session else session.get("session_type", SESSION_TYPE_NORMAL)
+            if(not session):
+                return
+            session_type = session.get("session_type", SESSION_TYPE_NORMAL)
             master_node_id = None
             if(session_type==SESSION_TYPE_GAME):
                 master_node_id = session.get("session_game_master_node_id")
@@ -472,6 +475,7 @@ class Node():
                     from_conn.send(json_util.dumps(Message(type=SESSION_UNAUTHORIZED, payload=None, dest_id=from_conn.to_node_id).to_son()))
                 except Exception as ex:
                     self.destroy_connection(from_conn.ws, conn_obj=from_conn , on_exception=ex)
+                return
     
                 
                 
@@ -752,14 +756,21 @@ def create_session(sock , query_params=None, headers=None):
             if(len(i)>1):
                 nodes_in_session.append([i[0], True,  i[1]])
             else:
-                node_id =  nodes_in_session.append([i[0], False,  None])
+                nodes_in_session.append([i[0], False,  None])
     
     else:
         nodes_in_session = [[node_id, is_anonymous, None]]
 
+    session_game_master_node_id = query_params.get("session_game_master_node_id", none_arr)[0]
+    session_type = query_params.get("session_type", none_arr)[0]
+    if(not session_type):
+        session_type = 0
+    else:
+        session_type = int(session_type)
+    
     
     write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
-    session_id = db.create_session(node_id, session_id=session_id)
+    session_id = db.create_session(node_id, session_id=session_id, session_type=session_type, session_game_master_node_id=session_game_master_node_id)
     for node_id, is_anonymous,  anonymous_node_id in nodes_in_session:
         db.join_session(session_id, node_id, is_anonymous=is_anonymous, update_in_db=True, anonymous_node_id=anonymous_node_id)
         
@@ -1083,7 +1094,20 @@ def start_transport_server(handlers=[]):
     
     stream_server.serve_forever()    
 
+def on_signal_term_handler(signal, frame):
+    logger.debug("got sigterm.. trying to empty all messages before killing server")
+    db.disable_serving_node(current_node.node_id)
+    stream_server.stop()#100 seconds
+
+    for ws in current_node.connections_ws.keys():
+        current_node.destroy_connection(ws)#gracefully kills all connections
+        
+    sys.exit(0)
+    
+
 if __name__ =="__main__":
+    signal.signal(signal.SIGTERM, on_signal_term_handler)
+    
     start_transport_server([('^/connectV2', websocket_handler_v2), 
                             ('^/connectV3', websocket_handler_v3),
                             ('^/unjoin_session', unjoin_session),
