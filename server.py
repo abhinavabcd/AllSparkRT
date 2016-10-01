@@ -338,8 +338,11 @@ class Node():
             while(c>0):
                 try:   
                     node = db.get_node_by_id(node_id)
-                    timestamp , conn = self.intermediate_hops.get(node_id, None)
-                    if(conn): return conn
+                    temp = self.intermediate_hops.get(node_id, None)
+                    if(temp):
+                        timestamp , conn = temp
+                        if(conn):
+                            return conn
                     
                     if(node.get("cluster_id", None)!=self.cluster_id):
                         #check if there is an existing connection to that cluster
@@ -349,8 +352,8 @@ class Node():
                     conn =  self.make_new_connection(node_id)
                     return conn
                 except Exception as e:
-                    exc_type, exc_value, exc_traceback = sys.exc_info()
-                    traceback.print_tb(exc_traceback)
+#                     exc_type, exc_value, exc_traceback = sys.exc_info()
+#                     traceback.print_tb(exc_traceback)
                     logger.error(sys.exc_info())
                     pass
                 c-=1
@@ -683,9 +686,12 @@ class Node():
         
         db.remove_connection(conn.connection_id)
         try:
+            logger.debug(conn.to_node_id)
             self.connections.get(conn.to_node_id).remove(conn)
         except:
+            logger.error(sys.exc_info())
             logger.debug("strange error , connection not in node connections list")
+            
         self.connections_delta_changed(-1)
         
         # retransmit messages onto other connections for this node
