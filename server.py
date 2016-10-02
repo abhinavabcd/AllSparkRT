@@ -301,11 +301,12 @@ class Node():
                 if len(conn.queue)<50:
                     logger.debug("using connection for %s %s"%(node_id, conn.connection_id))
                     return conn
-        
+        logger.debug("a")
         is_server = db.is_server_node(node_id)
         if(is_server==None):
             return None
         if(not is_server):#not reachable directly, we mean we cannot open connection to that
+            logger.debug("b")        
             if(conn_list):# just return whatever connection we have to that client
                 conn = conn_list[0] # althogh the queue size is high , we will reuse it , as we cannot make new connection to client directly
                 logger.debug("using connection for %s %s"%(node_id, conn.connection_id))
@@ -313,10 +314,12 @@ class Node():
                 
             #check for any intermediate node that it is connected to
             
+            logger.debug("c")
             temp = self.intermediate_hops.get(node_id, None)
             intermediate_node_id = None
             conn = None
             if(temp):
+                logger.debug("d")
                 timestamp, conn = temp
                 if(time.time() - timestamp > 5*60):#5 minutes
                     intermediate_node_id = temp = conn = None
@@ -324,6 +327,7 @@ class Node():
                     
                 
             if(not intermediate_node_id):
+                logger.debug("e")
                 intermediate_node_id = db.get_node_with_connection_to(node_id)
                 if(intermediate_node_id==None or intermediate_node_id==current_node.node_id):
                     return None
@@ -331,16 +335,20 @@ class Node():
             if(not conn):# try and get new connection to the intermediate node
                 conn = self.get_connection(intermediate_node_id)
                 self.intermediate_hops.set(node_id ,  (time.time(), conn))
+                
+            logger.debug("f")
             return conn
         else:
             # try making connection to the server            
             c = 3
             while(c>0):
                 try:
+                    logger.debug("g")
                     node = db.get_node_by_id(node_id)
                     temp = self.intermediate_hops.get(node_id, None)
                     logger.debug("intermediate hop %s",temp)
                     if(temp):
+                        logger.debug("h")
                         timestamp , conn = temp
                         if(not conn or conn.is_stale):
                             self.intermediate_hops.delete(node_id)
@@ -352,6 +360,7 @@ class Node():
                         pass
                         
                                           
+                    logger.debug("i")
                     conn =  self.make_new_connection(node_id)
                     return conn
                 except Exception as e:
@@ -689,6 +698,8 @@ class Node():
         
         db.remove_connection(conn.connection_id)
         try:
+            logger.debug("%s -> %s"%(conn.from_node_id, conn.to_node_id))
+            logger.debug(self.connections.get(conn.to_node_id))
             self.connections.get(conn.to_node_id).remove(conn)
             conn.is_stale = True
             logger.debug("setting connections as stale")
