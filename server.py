@@ -341,7 +341,9 @@ class Node():
                     temp = self.intermediate_hops.get(node_id, None)
                     if(temp):
                         timestamp , conn = temp
-                        if(conn):
+                        if(not conn or conn.is_stale):
+                            self.intermediate_hops.delete(node_id)
+                        else:
                             return conn
                     
                     if(node.get("cluster_id", None)!=self.cluster_id):
@@ -586,7 +588,6 @@ class Node():
                     self.destroy_connection(conn.ws, conn_obj=conn , on_exception=ex)
                     logger.debug("An exception occured while sending to %s , retrying with another connection"%conn.to_node_id)
                     
-          
     
     def send_a_ting(self, dest_id , msg=None):
         #put to a queue
@@ -686,10 +687,8 @@ class Node():
         
         db.remove_connection(conn.connection_id)
         try:
-            logger.debug(conn.to_node_id)
             self.connections.get(conn.to_node_id).remove(conn)
         except:
-            logger.error(sys.exc_info())
             logger.debug("strange error , connection not in node connections list")
             
         self.connections_delta_changed(-1)
@@ -711,6 +710,7 @@ class Node():
                     logger.debug("not resending from buffer : " +str(timestamp))
         
         logger.debug("%s : destroying %s  with node %s"%(current_node.node_id ,conn.connection_id,  conn.to_node_id))
+        conn.is_stale = True
         try:
             ws.close()
         except Exception as ex:
