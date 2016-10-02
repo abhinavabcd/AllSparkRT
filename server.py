@@ -241,7 +241,7 @@ class Node():
                         except:
                             to_destroy.append(conn)
                     else:
-                        if(time.time()*1000 - conn.last_msg_recv_timestamp > 30*60*1000 and time.time()*1000 - conn.last_msg_sent_timestamp > 30*60*1000):
+                        if(time.time()*1000 - conn.last_msg_recv_timestamp > 1*60*1000 and time.time()*1000 - conn.last_msg_sent_timestamp > 1*60*1000):
                             #30 min no msg received or sent, basically very idle
                             to_destroy.append(conn)
                              
@@ -336,9 +336,10 @@ class Node():
             # try making connection to the server            
             c = 3
             while(c>0):
-                try:   
+                try:
                     node = db.get_node_by_id(node_id)
                     temp = self.intermediate_hops.get(node_id, None)
+                    logger.debug("intermediate hop %s",temp)
                     if(temp):
                         timestamp , conn = temp
                         if(not conn or conn.is_stale):
@@ -555,6 +556,7 @@ class Node():
             
             while(True):#loops through connections until you can send the message it once
                 conn = self.get_connection(dest_id)
+                logger.debug("got a connection %s",conn)
                 msg.dest_id = dest_id
                 if(not conn): 
                     logger.debug("Could not send, putting into db, and notifying user about new messages")
@@ -688,6 +690,9 @@ class Node():
         db.remove_connection(conn.connection_id)
         try:
             self.connections.get(conn.to_node_id).remove(conn)
+            conn.is_stale = True
+            logger.debug("setting connections as stale")
+            
         except:
             logger.debug("strange error , connection not in node connections list")
             
@@ -710,7 +715,6 @@ class Node():
                     logger.debug("not resending from buffer : " +str(timestamp))
         
         logger.debug("%s : destroying %s  with node %s"%(current_node.node_id ,conn.connection_id,  conn.to_node_id))
-        conn.is_stale = True
         try:
             ws.close()
         except Exception as ex:
