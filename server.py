@@ -576,7 +576,7 @@ class Node():
                     #send a push notification to open and fetch any pending messages
                     break # cannot find any connection
                 try:
-                    if(current_timestamp - conn.last_msg_recv_timestamp > 30*60*1000):#20 minutes no ping
+                    if(current_timestamp - conn.last_msg_recv_timestamp > 1*60*1000):#20 minutes no ping
                         raise Exception("Not ping recieved , stale connection to %s"%conn.to_node_id)#probably a stale connection 
                     msg_json = None
                     if(conn.is_external_node):
