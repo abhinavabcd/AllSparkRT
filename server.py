@@ -318,7 +318,7 @@ class Node():
             conn = None
             if(temp):
                 timestamp, conn = temp
-                if(time.time() - timestamp > 5*60):#5 minutes
+                if(conn.is_stale or time.time() - timestamp > 5*60):#5 minutes
                     intermediate_node_id = temp = conn = None
                     self.intermediate_hops.delete(node_id) # remove and fetch again
                     
@@ -330,13 +330,15 @@ class Node():
             
             if(not conn):# try and get new connection to the intermediate node
                 conn = self.get_connection(intermediate_node_id)
-                self.intermediate_hops.set(node_id ,  (time.time(), conn))
+                if(conn):
+                    self.intermediate_hops.set(node_id ,  (time.time(), conn))
+                
             return conn
         else:
             # try making connection to the server            
             c = 3
             while(c>0):
-                try:   
+                try:
                     node = db.get_node_by_id(node_id)
                     temp = self.intermediate_hops.get(node_id, None)
                     if(temp):
@@ -368,7 +370,7 @@ class Node():
         
         client_id = from_node.client_id
         
-        conn = Connection(ws, from_node_id, client_id, connection_id)
+        conn = Connection(ws, from_node_id, client_id, connection_id)#connection to the node, so to_node_id , in current nodes perspective
         if(not connection_id):#anonymous connection
             conn.is_external_node = True
             
@@ -688,6 +690,7 @@ class Node():
         db.remove_connection(conn.connection_id)
         try:
             self.connections.get(conn.to_node_id).remove(conn)
+            conn.is_stale = True
         except:
             logger.debug("strange error , connection not in node connections list")
             
