@@ -321,11 +321,10 @@ class Node():
             if(temp):
                 logger.debug("d")
                 timestamp, conn = temp
-                if(time.time() - timestamp > 5*60):#5 minutes
+                if(conn.is_stale or time.time() - timestamp > 5*60):#5 minutes
                     intermediate_node_id = temp = conn = None
                     self.intermediate_hops.delete(node_id) # remove and fetch again
                     
-                
             if(not intermediate_node_id):
                 logger.debug("e")
                 intermediate_node_id = db.get_node_with_connection_to(node_id)
@@ -335,8 +334,8 @@ class Node():
             if(not conn):# try and get new connection to the intermediate node
                 logger.debug("f %s"%intermediate_node_id)
                 conn = self.get_connection(intermediate_node_id)
-                logger.debug(conn)
-                self.intermediate_hops.set(node_id ,  (time.time(), conn))
+                if(conn):
+                    self.intermediate_hops.set(node_id ,  (time.time(), conn))
                 
             logger.debug("g")
             return conn
