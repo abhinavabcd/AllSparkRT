@@ -301,7 +301,7 @@ class Node():
                 if len(conn.queue)<50:
                     logger.debug("using connection for %s %s"%(node_id, conn.connection_id))
                     return conn
-        logger.debug("a")
+        logger.debug("a %s"%node_id)
         is_server = db.is_server_node(node_id)
         if(is_server==None):
             return None
@@ -333,10 +333,12 @@ class Node():
                     return None
             
             if(not conn):# try and get new connection to the intermediate node
+                logger.debug("f %s"%intermediate_node_id)
                 conn = self.get_connection(intermediate_node_id)
+                logger.debug(conn)
                 self.intermediate_hops.set(node_id ,  (time.time(), conn))
                 
-            logger.debug("f")
+            logger.debug("g")
             return conn
         else:
             # try making connection to the server            
@@ -378,7 +380,7 @@ class Node():
         
         client_id = from_node.client_id
         
-        conn = Connection(ws, from_node_id, client_id, connection_id)
+        conn = Connection(ws, from_node_id, client_id, connection_id)#connection to the node, so to_node_id , in current nodes perspective
         if(not connection_id):#anonymous connection
             conn.is_external_node = True
             
