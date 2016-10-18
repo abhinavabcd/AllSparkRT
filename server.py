@@ -242,7 +242,7 @@ class Node():
                             to_destroy.append(conn)
                     else:
                         if(time.time()*1000 - conn.last_msg_recv_timestamp > 30*60*1000 and time.time()*1000 - conn.last_msg_sent_timestamp > 30*60*1000):
-                            #30 min no msg received or sent, basically very idle
+                            #30 min no msg received or sent, basically very idle connection , they should probably be closed instead of monitoring
                             to_destroy.append(conn)
                              
                 
@@ -604,7 +604,7 @@ class Node():
             
             
             gcm_key = node.get("gcm_key", None)
-            if(gcm_key and node.get("last_push_sent", config.EPOCH_DATETIME)+timedelta(minutes=10)<datetime.now()):
+            if(gcm_key and node.get("last_push_sent", config.EPOCH_DATETIME)+timedelta(minutes=2)<datetime.now()):
                 node["last_push_sent"] = datetime.now()
                 logger.debug("sending a push notification")
                 GCM_HEADERS ={'Content-Type':'application/json',
@@ -621,7 +621,7 @@ class Node():
                     
                 packetData={"message":title,
                             "payload1":"" if not msg else msg.src_id,
-                            "notification_type": 101
+                            "notification_type": "101"
                             }
                 registrationIds =[
                                   gcm_key
@@ -738,8 +738,8 @@ def set_socket_options(sock):
     
 
     TCP_USER_TIMEOUT = 18
-    max_unacknowledged_timeout = 10*1000 #ms                                                                                                                                           
-    #sock.setsockopt(socket.SOL_TCP, TCP_USER_TIMEOUT, max_unacknowledged_timeout)# close means a close understand ? 
+    max_unacknowledged_timeout = 100*1000 #ms                                                                                                                                           
+    sock.setsockopt(socket.SOL_TCP, TCP_USER_TIMEOUT, max_unacknowledged_timeout)# close means a close understand ? 
 
 
 
@@ -804,6 +804,11 @@ def get_session_info(sock , query_params=None, headers = None):
     if(session_info):
         session_info = session_info.copy()
     session_nodes = db.get_node_ids_for_session(session_id)
+    if(not session_nodes.get(node_id, None)):
+        write_data(sock, "{'error':'not authorized'}")
+        sock.close()
+        
+        
     session_info["node_ids"] = map(lambda x : x[1] or x[0] , session_nodes.values()) # anonymous or original node id
 
     session_owner_node_anonymous = session_nodes.get(session_info["node_id"],none_arr)[1]
@@ -966,55 +971,94 @@ def write_data(socket, data):
             break
 
 
-def read_line(socket):
-    data = ""
-    while(True):
-        byt = socket.recv(1)
-        data+=byt
-        if(byt=='\n' or not byt):
-            return data
+
+class SocketDataReader():
+    
+    is_eof = False
+    sock= None
+    store = None
+    _n = 0
+    def __init__(self, sock):
+        self.sock = sock
+        self.store = bytearray()
+        self._n = 0
+    
+    def read(self, n):
+        while(self._n+n > len(self.store)):
+            data = self.sock.recv(1024)
+            if(not data):
+                self.is_eof = True
+                return None
+            self.store.extend(data) 
+        ret = self.store[self._n:self._n+n]
+        self._n+=n
+        return ret
+        
+            
+            
+    def read_line(self):
+        if(self.is_eof): return None
+        n = self._n
+        line_found = False
+        while(not line_found):
+            if(n>=len(self.store)):
+                data = self.sock.recv(1024)
+                if(not data):
+                    self.is_eof = True
+                    break
+                self.store.extend(data) #fetch more data
+                
+            if(self.store[n]==ord('\n')):
+                line_found = True
+            n+=1
+        
+        
+        ret = self.store[self._n: n]
+        self._n = n
+        return ret
+
+
 
 def handle_connection(socket, address): 
-    request_line = read_line(socket)
+    socket_data_reader = SocketDataReader(socket)
+    request_line = socket_data_reader.read_line()
     request_params = {}
     try:
         request_type , request_path , http_version = request_line.split(" ")
         query_start_index = request_path.find("?")
         if(query_start_index!=-1):
-            request_params = urlparse.parse_qs(request_path[query_start_index+1:])
+            request_params = urlparse.parse_qs(str(request_path[query_start_index+1:]))
             request_path = request_path[:query_start_index]
-            
     except:
         socket.close()
         
-    logger.debug("new request" +  request_line)
+    logger.debug("new request"  +request_line)
     headers = {}
-    while(True):
-        l = read_line(socket)
+    while(True):#keep reading headers
+        l = socket_data_reader.read_line()
         if(l=='\r\n'):
             break
         if( not l):
             return
         header_type , data  =  l.split(": ",1)
-        headers[header_type] = data
+        headers[str(header_type)] = data
         
     if(request_type == "POST" and headers.get("Content-Length", None)):
         n = int(headers.get("Content-Length","0").strip(" \r\n"))
         if(n>0):
             data = ""
             while(len(data) < n):
-                bts = socket.recv(n)
+                bts = socket_data_reader.read(n)
                 if(not bts):
                     break
                 data +=bts
             if(request_params):
-                request_params.update(urlparse.parse_qs(data))
+                request_params.update(urlparse.parse_qs(str(data)))
             else:
-                request_params = urlparse.parse_qs(data)
+                request_params = urlparse.parse_qs(str(data))
     ##app specific headers
             
     for handler in request_handlers:
-        
         args = handler[0].match(request_path)
         func = handler[1]
         kwargs = {}
@@ -1065,7 +1109,7 @@ def start_transport_server(handlers=[]):
     if(args.log_level=='debug'):
         logger.setLevel(logging.DEBUG)
         log_handler.setLevel(logging.DEBUG)
-        #init_timed_rotating_log("logs/logs_"+args.port+".log",  logging.DEBUG)
+    init_timed_rotating_log("logs/logs_"+args.port+".log",  logging.DEBUG)
     
     if(not args.port or not  args.host_address):
         logger.debug("port and host name needed")

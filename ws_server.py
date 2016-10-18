@@ -226,7 +226,7 @@ class WebSocketServerHandler(object):
     
       try:
          key = headers['Sec-WebSocket-Key'].strip()
-         k = key.encode('ascii') + GUID_STR.encode('ascii')
+         k = str(key).encode('ascii') + str(GUID_STR).encode('ascii')
          k_s = base64.b64encode(hashlib.sha1(k).digest()).decode('ascii')
          hStr = HANDSHAKE_STR % {'acceptstr': k_s}
          self._sendBuffer(hStr.encode('ascii'))
