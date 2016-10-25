@@ -446,7 +446,7 @@ class Node():
                 session_node_ids = db.get_node_ids_for_session(msg.dest_session_id)
                 for i in session_node_ids:
                     if(session_node_ids[i][1] == msg.dest_id): #anonymous
-                        dest_ids = [session_node_ids[i][0]]
+                        dest_ids.append(session_node_ids[i][0])
                         break
                 #should anonymize just in case ? yes !
                 temp = session_node_ids.get(msg.src_id, None)
@@ -454,7 +454,7 @@ class Node():
                     msg.anonymize_src_id = temp[1]
 
             else:
-                dest_ids = [msg.dest_id]
+                dest_ids.append(msg.dest_id)
                 
         elif(msg.dest_client_id):# broadcast to every client node if a destination is not specified
             dest_ids = db.get_node_ids_by_client_id(msg.dest_client_id)
@@ -738,7 +738,7 @@ def set_socket_options(sock):
     
 
     TCP_USER_TIMEOUT = 18
-    max_unacknowledged_timeout = 100*1000 #ms                                                                                                                                           
+    max_unacknowledged_timeout = 100*1000 #ms                                                                                                                                         
     sock.setsockopt(socket.SOL_TCP, TCP_USER_TIMEOUT, max_unacknowledged_timeout)# close means a close understand ? 
 
 
@@ -756,6 +756,7 @@ def create_session(sock , query_params=None, headers=None):
 
     node = db.get_node_by_id(node_id)
     is_anonymous = query_params.get("is_anonymous",none_arr)[0]
+    anyone_can_join = query_params.get("anyone_can_join", none_arr)[0]
     
     temp = query_params.get("_session_info_",none_arr)[0]
     #_session_info_ will contains   [session_id,  [[a, b], [c]] ]
@@ -775,6 +776,7 @@ def create_session(sock , query_params=None, headers=None):
         nodes_in_session = [[node_id, is_anonymous, None]]
 
     session_game_master_node_id = query_params.get("session_game_master_node_id", none_arr)[0]
+    notify_only_last_few_users = query_params.get("notify_only_last_few_users", none_arr)[0]
     session_type = query_params.get("session_type", none_arr)[0]
     if(not session_type):
         session_type = 0
@@ -783,7 +785,7 @@ def create_session(sock , query_params=None, headers=None):
     
     
     write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
-    session_id = db.create_session(node_id, session_id=session_id, session_type=session_type, session_game_master_node_id=session_game_master_node_id)
+    session_id = db.create_session(node_id, session_id=session_id, session_type=session_type, session_game_master_node_id=session_game_master_node_id, notify_only_last_few_users=notify_only_last_few_users, anyone_can_join=anyone_can_join)
     for node_id, is_anonymous,  anonymous_node_id in nodes_in_session:
         db.join_session(session_id, node_id, is_anonymous=is_anonymous, update_in_db=True, anonymous_node_id=anonymous_node_id)
         
@@ -866,7 +868,19 @@ def join_session(sock , query_params=None, headers = None):
     
     session_id = query_params.get("session_id",none_arr)[0]
     anonymous_id = query_params.get("anonymous_id",none_arr)[0]
+    session = db.get_session_by_id(session_id)
+    is_allowed = False
+    if(session.get("node_id",None)==node_id):#the owner of the session adds an user
+        node_id = query_params.get("node_id",none_arr)[0]
+        is_allowed = True
+        
+    if(session.get("anyone_can_join", False)):
+        is_allowed = True 
     
+    if(not node_id or not is_allowed):
+        sock.close()
+        return
+
     write_data(sock, "HTTP/1.1 200 OK\r\n\r\n")
     write_data(sock, json_util.dumps(db.join_session(session_id, node_id, anonymous_node_id=anonymous_id, update_in_db=True)))
     current_node.on_message(None, None, Message(src_id=node_id, dest_session_id=session_id, type=NEW_NODE_JOINED_SESSION))
@@ -1032,7 +1046,7 @@ def handle_connection(socket, address):
     except:
         socket.close()
         
-    logger.debug("new request"  +request_line)
+    logger.debug(request_line)
     headers = {}
     while(True):#keep reading headers
         l = socket_data_reader.read_line()
@@ -1157,7 +1171,7 @@ def on_signal_term_handler(signal, frame):
     stream_server.stop()#100 seconds
 
     for ws in current_node.connections_ws.keys():
-        current_node.destroy_connection(ws)#gracefully kills all connections
+        current_node.destroy_connection(ws)#gracefully kill all connections
         
     sys.exit(0)
     

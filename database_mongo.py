@@ -206,7 +206,11 @@ class Db():
         if(node_ids):
             return node_ids
         ret = collections.OrderedDict()
-        for i in self.session_nodes.find({"session_id":session_id}):
+        session =self.get_session_by_id(session_id)
+        max_users_to_notify = session.get("notify_only_last_few_users",256)
+
+        session_nodes= self.session_nodes.find({"session_id":session_id}).sort([("_id",-1)])
+        for i in session_nodes[:max_users_to_notify]:
             ret[i["node_id"]] = (i["node_id"], i.get("anonymous_node_id",None))
             
         self.session_node_ids_cache.set(session_id, ret)
@@ -250,9 +254,12 @@ class Db():
         result = self.connections.delete_many({"to_node_id":node_id})
         logger.debug("deleted connections from db : "+str(result.deleted_count))
     
-    def create_session(self , node_id, session_id=None, session_type=0, session_game_master_node_id=None):
+    def create_session(self , node_id, session_id=None, session_type=0, session_game_master_node_id=None, notify_only_last_few_users=None, anyone_can_join=None):
         session_id = session_id or util_funcs.get_random_id(10)
-        self.sessions.insert_one({"session_id":session_id, "node_id":node_id , "created_at":time.time(), "session_type":session_type, "session_game_master_node_id":session_game_master_node_id})   
+        if(not notify_only_last_few_users):
+            notify_only_last_few_users = -1
+        notify_only_last_few_users = max(256 , int(notify_only_last_few_users))
+        self.sessions.insert_one({"session_id":session_id, "node_id":node_id , "created_at":time.time(), "session_type":session_type, "session_game_master_node_id":session_game_master_node_id, "notify_only_last_few_users" :notify_only_last_few_users, anyone_can_join:anyone_can_join})
         return session_id
     
     def get_session_by_id(self, session_id):
@@ -287,8 +294,15 @@ class Db():
             ret = self.session_nodes.find_one(doc)
             if(ret):
                 anonymous_node_id = ret["anonymous_node_id"]
-        
+                
+        #below code is to only only notify_only_last_few_users
         node_ids = self.session_node_ids_cache.get(session_id)
+        session =self.get_session_by_id(session_id)
+        notify_only_last_few_users = session.get("notify_only_last_few_users",-1)
+        if(notify_only_last_few_users!=-1):# -1 means every one , possitve number mean , last n users will be notified
+            if(len(node_ids)>notify_only_last_few_users and node_ids and not node_ids.get(node_id, None)):#remove the first 
+                node_ids.popitem(last=False)
+
         if(node_ids):
             if(not node_ids.get(node_id, None)):
                 node_ids[node_id] = (node_id, anonymous_node_id)
@@ -377,10 +391,16 @@ class Db():
             ret = user_seq["seq"]
             current_timestamp = time.time()*1000
             if(update and current_timestamp - user_seq["timestamp"] >30*60*1000):
-                ret+=1
                 user_seq["timestamp"] = current_timestamp
-                user_seq["seq"]+=1
-                self.node_seq.update_one({"node_id":node_id}, {"$inc":{"seq":1} , "$set": {"timestamp": current_timestamp}})              
+                
+                _user_seq_in_db = self.node_seq.find_one({"node_id":node_id})
+                if(_user_seq_in_db["seq"]>ret):
+                    ret = _user_seq_in_db["seq"]
+                else:
+                    ret+=1
+                    self.node_seq.update_one({"node_id":node_id}, {"$inc":{"seq":1} , "$set": {"timestamp": current_timestamp}})              
+                user_seq["seq"] = ret
+
             return ret
         else:
             user_seq = {"node_id":node_id, "seq":0, "timestamp":int(time.time()*1000)}
