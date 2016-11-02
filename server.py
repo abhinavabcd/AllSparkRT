@@ -728,7 +728,6 @@ class Node():
 
 def set_socket_options(sock):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, 0)
     
     l_onoff = 1                                                                                                                                                           
     l_linger = 10 # seconds,                                                                                                                                                     
