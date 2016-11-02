@@ -623,14 +623,12 @@ class Node():
                             "payload1":"" if not msg else msg.src_id,
                             "notification_type": "101"
                             }
-                registrationIds =[
-                                  gcm_key
-                ]
-                data = {"registration_ids":registrationIds,"data":packetData }
-                logger.debug(registrationIds)
+               
+                data = {"to":gcm_key,"data":packetData }
+                logger.debug(gcm_key)
                 post= json_util.dumps(data)
                 headers = GCM_HEADERS
-                ret=get_data('https://android.googleapis.com/gcm/send',post,headers).read()
+                ret=get_data('https://fcm.googleapis.com/fcm/send',post,headers).read()
                 logger.debug(ret)
             else:
                 logger.debug("too soon to send another push notification")
@@ -730,7 +728,8 @@ class Node():
 
 def set_socket_options(sock):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-#    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, 0)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, 0)
+    
     l_onoff = 1                                                                                                                                                           
     l_linger = 10 # seconds,                                                                                                                                                     
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,                                                                                                                     

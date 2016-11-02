@@ -32,7 +32,7 @@ class Db():
     
     
     node_cache = LRUCache(10000)
-    user_seq_cache = LRUCache(10000)
+    node_seq_cache = LRUCache(10000)
     session_node_ids_cache = LRUCache(100000)
     session_info_cache = LRUCache(10000)
     
@@ -381,30 +381,29 @@ class Db():
 
     def get_seq(self, node_id, update=True):
         
-        user_seq = self.user_seq_cache.get(node_id)
-        if(not user_seq):
-            user_seq = self.node_seq.find_one({"node_id":node_id})
-            if(user_seq!=None):
-                self.user_seq_cache.set(node_id, user_seq )
+        node_seq = self.node_seq_cache.get(node_id)
+        if(not node_seq):
+            node_seq = self.node_seq.find_one({"node_id":node_id})
+            if(node_seq!=None):
+                self.node_seq_cache.set(node_id, node_seq )
             
-        if(user_seq):
-            ret = user_seq["seq"]
+        if(node_seq):#syn from db if time to check expired
+            ret = node_seq["seq"]
             current_timestamp = time.time()*1000
-            if(update and current_timestamp - user_seq["timestamp"] >30*60*1000):
-                user_seq["timestamp"] = current_timestamp
-                
-                _user_seq_in_db = self.node_seq.find_one({"node_id":node_id})
-                if(_user_seq_in_db["seq"]>ret):
-                    ret = _user_seq_in_db["seq"]
-                else:
+            if(current_timestamp - node_seq["timestamp"] >30*60*1000):
+                _node_seq_in_db = self.node_seq.find_one({"node_id":node_id})
+                if(_node_seq_in_db["seq"]>ret):
+                    node_seq  =  _node_seq_in_db
+                    self.node_seq_cache.set(node_id, node_seq)
+                    ret = node_seq["seq"]
+                elif(update):
                     ret+=1
-                    self.node_seq.update_one({"node_id":node_id}, {"$inc":{"seq":1} , "$set": {"timestamp": current_timestamp}})              
-                user_seq["seq"] = ret
-
+                    self.node_seq.update_one({"node_id":node_id}, {"$set": {"timestamp": current_timestamp, "seq":ret}})              
+                    node_seq["timestamp"] = time.time()*1000
+                    node_seq["seq"] = ret
             return ret
         else:
-            user_seq = {"node_id":node_id, "seq":0, "timestamp":int(time.time()*1000)}
-            self.user_seq_cache.set(node_id , user_seq)
-            self.node_seq.insert_one(user_seq)
+            node_seq = {"node_id":node_id, "seq":0, "timestamp":int(time.time()*1000)}
+            self.node_seq_cache.set(node_id , node_seq)
+            self.node_seq.insert_one(node_seq)
             return 0
-        
