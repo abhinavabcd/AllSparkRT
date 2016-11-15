@@ -46,7 +46,7 @@ from websocket import create_connection , WebSocket
 
 
 from gevent.lock import BoundedSemaphore
-
+import gc
 
 
 ##message types
@@ -147,7 +147,7 @@ class Connection(WebSocket):
                 
                 self.msg_assumed_sent.append((current_timestamp , data_ref, data))
                 
-#                logger.debug("message sent to "+self.to_node_id)
+                logger.debug("message sent to "+self.to_node_id)
             
         except  Exception as ex:
             err_msg  = "Exception while sending message to %s , might be closed "%self.to_node_id
@@ -226,7 +226,7 @@ class Node():
     _delta_connections = 0
     _update_on_num_connections_change = 100
     
-    intermediate_hops = LRUCache(100000)
+    intermediate_hops = LRUCache(10000)
     def send_heartbeat(self):
         ping_json = json_util.dumps({"src_id":self.node_id})
         while(True):
@@ -248,7 +248,8 @@ class Node():
                 
                 for conn in to_destroy:
                     self.destroy_connection(conn.ws, conn_obj=conn)
-                            
+            
+            gc.collect()
             time_elapsed = time.time()-last_ping_sent
             logger.debug("sent a heartbeat")
             gevent.sleep(max(0 , 10*60 - (time_elapsed))) # 10 minutes send a heart beat
@@ -624,7 +625,7 @@ class Node():
                             "notification_type": "101"
                             }
                
-                data = {"to":gcm_key,"data":packetData }
+                data = {"to":gcm_key,"data":packetData , "notification":{"body":title, "title":"new message","icon":"ic_launcher"}}
                 logger.debug(gcm_key)
                 post= json_util.dumps(data)
                 headers = GCM_HEADERS
@@ -675,15 +676,16 @@ class Node():
 #         for line in traceback.format_stack():
 #             print(line.strip())
         resend_last_msgs = False
-        if(on_exception):
-            logger.debug("destroying on exception:  "+str(on_exception))
-            resend_last_msgs=(type(on_exception)==socket.error)
         
         conn = self.connections_ws.pop(ws,None)
         if(not conn):
             if(not conn_obj):# no connection object passed
                 return
             conn = conn_obj
+
+        if(on_exception):
+            logger.debug("destroying %s on exception:  %s"%(conn.connection_id, str(on_exception)))
+            resend_last_msgs=(type(on_exception)==socket.error)
         
         db.remove_connection(conn.connection_id)
         try:
@@ -726,18 +728,19 @@ class Node():
 
 
 
-def set_socket_options(sock):
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-    
+def set_socket_options(sock):    
     l_onoff = 1                                                                                                                                                           
     l_linger = 10 # seconds,                                                                                                                                                     
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,                                                                                                                     
                  struct.pack('ii', l_onoff, l_linger))# close means a close understand ? 
     
+    
+    
+    timeval = struct.pack('ll', 100, 0)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, timeval)
 
     TCP_USER_TIMEOUT = 18
-    max_unacknowledged_timeout = 100*1000 #ms                                                                                                                                         
-    sock.setsockopt(socket.SOL_TCP, TCP_USER_TIMEOUT, max_unacknowledged_timeout)# close means a close understand ? 
+    sock.setsockopt(socket.SOL_TCP, TCP_USER_TIMEOUT, max_assumed_sent_buffer_time)# close means a close understand ? 
 
 
 
@@ -950,8 +953,8 @@ def websocket_handler_v3(sock, query_params=None, headers= None, connection_vali
                         
     else:
         if(connection_validation and not connection_id):#only for external nodes
-            validation_key  = query_params.get("validation_key",None)
-            if(not validation_key or not current_node.is_connection_valid(current_node.node_id , validation_key[0])):
+            validation_key  = query_params.get("validation_key",none_arr)[0]
+            if(not validation_key or not current_node.is_connection_valid(current_node.node_id , validation_key)):
                 sock.close()
                 return
         
@@ -1044,7 +1047,6 @@ def handle_connection(socket, address):
     except:
         socket.close()
         
-    logger.debug(request_line)
     headers = {}
     while(True):#keep reading headers
         l = socket_data_reader.read_line()

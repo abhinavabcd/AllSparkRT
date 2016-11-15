@@ -31,7 +31,7 @@ DEFAULT_SOCKET_OPTION = [(socket.SOL_TCP, socket.TCP_NODELAY, 1)]
 if hasattr(socket, "SO_KEEPALIVE"):
     DEFAULT_SOCKET_OPTION.append((socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1))
 if hasattr(socket, "TCP_KEEPIDLE"):
-    DEFAULT_SOCKET_OPTION.append((socket.SOL_TCP, socket.TCP_KEEPIDLE, 30))
+    DEFAULT_SOCKET_OPTION.append((socket.SOL_TCP, socket.TCP_KEEPIDLE, 120))
 if hasattr(socket, "TCP_KEEPINTVL"):
     DEFAULT_SOCKET_OPTION.append((socket.SOL_TCP, socket.TCP_KEEPINTVL, 10))
 if hasattr(socket, "TCP_KEEPCNT"):

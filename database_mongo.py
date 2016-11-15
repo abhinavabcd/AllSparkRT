@@ -33,7 +33,7 @@ class Db():
     
     node_cache = LRUCache(10000)
     node_seq_cache = LRUCache(10000)
-    session_node_ids_cache = LRUCache(100000)
+    session_node_ids_cache = LRUCache(10000)
     session_info_cache = LRUCache(10000)
     
     def init(self, db_name,  user_name="", password="", host="127.0.0.1", namespace=""):
