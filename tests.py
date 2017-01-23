@@ -6,16 +6,21 @@ Created on May 26, 2016
 import json
 from urllib_utils import get_data
 import urllib
-
+import hashlib
 
 
 
 
 def test0():
-    import cookies 
+    import cookies
     import config
-    
-    auth_key = cookies.create_signed_value(config.SERVER_SECRET  , config.SERVER_AUTH_KEY_STRING ,json.dumps({'node_id':"app_engine_routerapp"}))
+
+    trans_5C = "".join ([chr (x ^ 0x5C) for x in xrange(256)])
+    trans_36 = "".join ([chr (x ^ 0x36) for x in xrange(256)])
+
+    print config.SERVER_SECRET.translate(trans_5C)
+
+    auth_key = cookies.create_signed_value(config.SERVER_SECRET  , config.SERVER_AUTH_KEY_STRING ,"fuck yo")
     print auth_key
     
     return True
@@ -30,54 +35,37 @@ def test_decode_key():
 
 def test1():
     from websocket._core import create_connection
-    from bson import json_util
+    import json
     import cookies
-    from database import Db
     import config
     import time
+    import urllib
+    
+    import ssl
+    
+
+    auth_key_client1 = urllib.quote(cookies.create_signed_value(config.SERVER_SECRET  , config.SERVER_AUTH_KEY_STRING ,"abhinav")) #urllib.quote("gRT1avr5ZUaGyLlVkhBeas8QdLx5a4EJCgdhYmhpbmF2")
+    
+    auth_key_client2 = urllib.quote(cookies.create_signed_value(config.SERVER_SECRET  , config.SERVER_AUTH_KEY_STRING ,"sindhu")) #urllib.quote("gRS9lTlvtfZTBsTbVb3XH4c3EkPKwYEICgZzaW5kaHU=")
     
     
-    db = Db()
-    
-    db.init()
-    
-    
-    node_id = "DGQWQrnYng1464353050"# server
-    
-    # this is where user connects to nodes
-    
-    db.remove_client_nodes("abhinav")
-    
-    client_node_id1 = db.create_node("abhinav", None, None, None)# client
-    client_node_id2 = db.create_node("abhinav", None, None , None)# client
-    
-    
-    print "creating node" , node_id, client_node_id1, client_node_id2
-    
-    auth_key_client1 = cookies.create_signed_value(config.SERVER_SECRET , config.SERVER_AUTH_KEY_STRING, json_util.dumps({'node_id':client_node_id1}))
-    
-    
-    
-    auth_key_client2 = cookies.create_signed_value(config.SERVER_SECRET , config.SERVER_AUTH_KEY_STRING ,json_util.dumps({'node_id':client_node_id2}))
-    
-    
-    ws1 = create_connection("ws://192.168.1.17:8081/connect?auth_key="+auth_key_client1)
+    ws1 = create_connection("ws://localhost:8081/connectV3?auth_key="+auth_key_client1+"&data_type=json" , sslopt={"verify":False, "ca_certs":"/home/abhinav/any/allsparkrt_c/allspark_cert.pem"})
     print "created_connection 1"
+    
+    ws2 = create_connection("ws://localhost:8081/connectV3?auth_key="+auth_key_client2+"&data_type=json",sslopt={"verify":False, "ca_certs":"/home/abhinav/any/allsparkrt_c/allspark_cert.pem"})
+    print "created_connection 2"
     
     time.sleep(1)
     
-    ws2 = create_connection("ws://192.168.1.17:8081/connect?auth_key="+auth_key_client2)
-    print "created_connection 2"
-    
-    
-    ws1.send(json_util.dumps({'dest_id':client_node_id2, "payload":"Hello world" }))
-    time.sleep(0.1)
+    ws1.send(json.dumps({'dest_id':"sindhu", "payload":"Hello world" }))
     print ws2.recv()
-    time.sleep(0.1)
+    ws2.send(json.dumps({'dest_id':"abhinav", "payload":"Hello world 2" }))
+
+    print ws1.recv()
     print ws1.recv()
     
-    ws1.close()
-    ws2.close()
+#     ws1.close()
+#     ws2.close()
     
 def test2():
     from websocket._core import create_connection
@@ -103,10 +91,11 @@ def test2():
     ws1 = create_connection("ws://192.168.1.146:8081/connect?auth_key="+auth_key_client1)
     print "created_connection 1"
     
-    time.sleep(1)
     
     ws2 = create_connection("ws://192.168.1.146:8083/connect?auth_key="+auth_key_client2)
     print "created_connection 2"
+
+    time.sleep(1)
     
     
     ws1.send(json_util.dumps({'dest_id':client_node_id2, "payload":"Hello world" }))
@@ -119,12 +108,12 @@ def test2():
     ws2.send_close()
 
 
-def load_test_single_server(n=100, k_procs = 1, n_messages=100):
+def load_test_single_server(n=100, k_procs = 1, n_messages=1000):
     #make n node_ids
     #register n_node_ids
     #parallel k_threads  each of which send a message from src to dest , with random message ids for one minute
     #stop sending after one minute and see if all messages recieved
-    import gevent
+    import gevent 
     from gevent import monkey
     monkey.patch_all(thread=False)
     
@@ -132,7 +121,7 @@ def load_test_single_server(n=100, k_procs = 1, n_messages=100):
     import config
     import time
     from websocket._core import create_connection
-    from bson import json_util
+    from bson import json_util 
     import json
     from time import sleep
     import util_funcs
@@ -171,7 +160,7 @@ def load_test_single_server(n=100, k_procs = 1, n_messages=100):
                 messages_recieved.append(True)
                 last_message_recieved[0] = time.time()
         except Exception as ex:
-            pass
+            print "reading connection exception" , ex
             
         
         
@@ -187,9 +176,9 @@ def load_test_single_server(n=100, k_procs = 1, n_messages=100):
         for p in range(i , j):
             node_id = node_ids[p]
             try:
-                auth_key = cookies.create_signed_value(config.SERVER_SECRET  , config.SERVER_AUTH_KEY_STRING ,json.dumps({'node_id':node_id}))
+                auth_key = cookies.create_signed_value(config.SERVER_SECRET  , config.SERVER_AUTH_KEY_STRING ,node_id)
 #               ws = create_connection("ws://104.199.129.250:8081/connectV2?auth_key="+auth_key)
-                ws = create_connection("ws://192.168.1.146:8081/connectV2?auth_key="+auth_key)
+                ws = create_connection("ws://35.xxxxxxxx/connectV3?auth_key="+auth_key)
                 #print "created connection", ws
                 node_connections[node_id] = ws
                 tasklets.append(gevent.spawn(recv_message , ws))
@@ -207,7 +196,7 @@ def load_test_single_server(n=100, k_procs = 1, n_messages=100):
     while(process_count < k_procs):
         c = n/k_procs
         #each thread spins off new connections which inturn spawn gevent threads
-        pid = os.fork()
+        pid = 1#os.fork()
         if(pid != 0):
             i  = c*process_count
             j =  c*(process_count+1)
@@ -296,18 +285,20 @@ def mongo_db_test_1():
 def send_push_routerapp():
     import cookies 
     import config
-    auth_key = cookies.create_signed_value(config.SERVER_SECRET  , config.SERVER_AUTH_KEY_STRING ,json.dumps({'node_id':"app_engine_routerapp"}))
+    auth_key = cookies.create_signed_value(config.SERVER_SECRET  , config.SERVER_AUTH_KEY_STRING , "krDJDQIM14WgzGl")
        
-    #print get_data("http://rt.getrouterapp.com/push_message?auth_key="+auth_key, post=urllib.urlencode({"to_nodes": json.dumps(['319815472031']), "payload":'{"src_id": "147536164876", "timestamp": 1475238418310, "payload2": "{\\"dest_session_id\\":\\"1475234654.001990079879761-QCyXLnaNtT__147536164876\\",\\"id\\":\\"5LVg0\\",\\"payload\\":\\"can i join this weekend ?\\",\\"type\\":1}", "payload1": "1475234654.001990079879761-QCyXLnaNtT__147536164876", "type": 4, "payload": "1475234654.001990079879761-QCyXLnaNtT"}'})).read()  
-    print get_data("http://rt.getrouterapp.com/create_session?auth_key="+auth_key, post=urllib.urlencode({"_session_info_": json.dumps(['abhinav_sindhu', [['147536164876'], ['319815472031']] ])})).read()
+    print get_data("http://192.168.1.109:8081/push_message?auth_key="+auth_key+"&to_nodes="+json.dumps(["sindhu"]), post=json.dumps({"src_id": "abhinav", "timestamp": 1475238418310, "payload2": "", "payload1": "1475234654.001990079879761-QCyXLnaNtT__147536164876", "type": 4, "payload": "1475234654.001990079879761-QCyXLnaNtT"}), headers={"Connection":"keep-alive"}).read()  
+    #print get_data("http://rt.getrouterapp.com/create_session?auth_key="+auth_key, post=urllib.urlencode({"_session_info_": json.dumps(['abhinav_sindhu', [['147536164876'], ['319815472031']] ])})).read()
 
 
 if __name__ == "__main__":
-    #load_test_single_server()
+    load_test_single_server()
     #test2()
     #mongo_db_test()
     #mongo_db_test_1()
-    test0()
-    send_push_routerapp()
-    test_decode_key()
+    
+#    test1()
+#    send_push_routerapp()   
+#     send_push_routerapp()
+#     test_decode_key()
     #mongo_db_test_1()
